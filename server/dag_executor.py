@@ -78,6 +78,36 @@ class DAGExecutor:
             raise ValueError("DAG contains a cycle — topological sort failed")
         return order
 
+    # ── Critical path ──
+
+    def compute_critical_path_length(
+        self, min_duration: dict[str, int] | None = None
+    ) -> int:
+        """Compute the critical path length (longest path through the DAG).
+
+        Args:
+            min_duration: mapping of subtask_id → minimum ticks to complete
+                (typically the speed of the fastest capable agent). If None,
+                every subtask is assumed to take 1 tick.
+
+        Returns:
+            Length of the critical path in ticks — the theoretical minimum
+            makespan with unlimited parallelism.
+        """
+        durations = min_duration or {}
+        order = self._topological_sort()
+
+        # Longest-path via DP on topological order
+        dist: dict[str, int] = {}
+        for sid in order:
+            dep_max = max(
+                (dist[dep] for dep in self._subtasks[sid].dependencies),
+                default=0,
+            )
+            dist[sid] = dep_max + durations.get(sid, 1)
+
+        return max(dist.values()) if dist else 0
+
     # ── Status transitions ──
 
     def update_ready_statuses(self) -> None:

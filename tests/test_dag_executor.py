@@ -150,6 +150,43 @@ class TestDAGExecutorFullWalkthrough:
         assert len(dag.get_completed_outputs()) == 6
 
 
+class TestCriticalPath:
+    def test_linear_dag_default_durations(self) -> None:
+        """A→B→C with default durations (1 each) has critical path = 3."""
+        dag = DAGExecutor([
+            {"id": "a", "type": "x", "dependencies": []},
+            {"id": "b", "type": "x", "dependencies": ["a"]},
+            {"id": "c", "type": "x", "dependencies": ["b"]},
+        ])
+        assert dag.compute_critical_path_length() == 3
+
+    def test_diamond_dag_takes_longest_branch(self) -> None:
+        """A→[B,C]→D: if B takes 3 ticks and C takes 1, critical path = 1+3+1 = 5."""
+        dag = DAGExecutor([
+            {"id": "a", "type": "x", "dependencies": []},
+            {"id": "b", "type": "x", "dependencies": ["a"]},
+            {"id": "c", "type": "x", "dependencies": ["a"]},
+            {"id": "d", "type": "x", "dependencies": ["b", "c"]},
+        ])
+        durations = {"a": 1, "b": 3, "c": 1, "d": 1}
+        assert dag.compute_critical_path_length(durations) == 5
+
+    def test_easy_task_critical_path(self) -> None:
+        """Easy task: 6 nodes, all speed=1. Critical path = longest chain length."""
+        # Longest chain: technical_design → implement_backend → implement_frontend → run_tests → review_and_merge = 5
+        # (write_tests is parallel to implement_frontend, shorter branch)
+        dag = DAGExecutor(get_task("easy").subtask_definitions)
+        assert dag.compute_critical_path_length() == 5
+
+    def test_medium_task_critical_path(self) -> None:
+        """Medium task: 9-node pipeline with fan-out. All durations=1 → longest chain = 7."""
+        # checkout → (longest of lint/tests/scan) → build → push → staging → smoke → prod
+        # The fan-out [lint, unit_tests, security_scan] are parallel, each takes 1 tick
+        # So critical path = 7 (the 7-node main chain through any fan-out branch)
+        dag = DAGExecutor(get_task("medium").subtask_definitions)
+        assert dag.compute_critical_path_length() == 7
+
+
 class TestDAGValidation:
     def test_cycle_detection(self) -> None:
         """DAG with a cycle should raise ValueError."""
