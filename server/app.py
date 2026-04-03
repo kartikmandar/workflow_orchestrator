@@ -36,20 +36,18 @@ except Exception as e:  # pragma: no cover
     ) from e
 
 try:
-    from ..models import WorkflowOrchestratorAction, WorkflowOrchestratorObservation
-    from .workflow_orchestrator_environment import WorkflowOrchestratorEnvironment
+    from ..models import OrchestratorAction, OrchestratorObservation
+    from .environment import OrchestratorEnvironment
 except ImportError:
-    from models import WorkflowOrchestratorAction, WorkflowOrchestratorObservation
-    from server.workflow_orchestrator_environment import WorkflowOrchestratorEnvironment
+    from models import OrchestratorAction, OrchestratorObservation
+    from server.environment import OrchestratorEnvironment
 
 
-# Create the app with web interface and README integration
 app = create_app(
-    WorkflowOrchestratorEnvironment,
-    WorkflowOrchestratorAction,
-    WorkflowOrchestratorObservation,
+    OrchestratorEnvironment,
+    OrchestratorAction,
+    OrchestratorObservation,
     env_name="workflow_orchestrator",
-    max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
 )
 
 

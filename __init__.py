@@ -6,11 +6,12 @@
 
 """Workflow Orchestrator Environment."""
 
-from .client import WorkflowOrchestratorEnv
-from .models import WorkflowOrchestratorAction, WorkflowOrchestratorObservation
+from .client import OrchestratorClient
+from .models import OrchestratorAction, OrchestratorObservation, OrchestratorState
 
 __all__ = [
-    "WorkflowOrchestratorAction",
-    "WorkflowOrchestratorObservation",
-    "WorkflowOrchestratorEnv",
+    "OrchestratorAction",
+    "OrchestratorObservation",
+    "OrchestratorState",
+    "OrchestratorClient",
 ]
