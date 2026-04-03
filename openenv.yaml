@@ -1,0 +1,18 @@
+spec_version: 1
+name: workflow_orchestrator
+description: >
+  LLM agent orchestrates DAG-based workflows of subtasks across simulated
+  specialist agents with varying capabilities and failure rates. Tests
+  coordination, delegation, parallelism, failure recovery, and cost management.
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+tags:
+  - openenv
+  - orchestration
+  - multi-agent
+  - workflow
+  - dag
+  - coordination
+
