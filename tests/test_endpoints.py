@@ -12,11 +12,11 @@ def client():
 
 
 class TestTasksEndpoint:
-    def test_get_tasks_returns_three(self, client) -> None:
+    def test_get_tasks_returns_all(self, client) -> None:
         resp = client.get("/tasks")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 3
+        assert len(data) >= 3
 
     def test_get_tasks_structure(self, client) -> None:
         resp = client.get("/tasks")
@@ -32,7 +32,7 @@ class TestTasksEndpoint:
     def test_get_tasks_ids(self, client) -> None:
         resp = client.get("/tasks")
         ids = {t["task_id"] for t in resp.json()}
-        assert ids == {"easy", "medium", "hard"}
+        assert {"easy", "medium", "hard"}.issubset(ids)
 
 
 class TestGraderEndpoint:

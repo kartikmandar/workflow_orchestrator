@@ -281,3 +281,215 @@ class TestStateAndLog:
         state = env.state
         # implement_backend was pending/ready, now failed after abort
         assert state.subtask_statuses["implement_backend"] == "failed"
+
+
+# ── Hard task walkthrough ──
+
+
+class TestHardTaskWalkthrough:
+    """Full walkthrough of the hard task (Production Incident Response).
+
+    The sequence was verified against the seeded RNG (seed=44) to produce
+    deterministic outcomes. Speed=1 agents complete in the same step as
+    delegation; speed=2 agents complete one step later.
+    """
+
+    def _run_known_good_sequence(self):
+        """Execute the known-good 14-step hard task walkthrough.
+
+        Returns (env, final_obs) so callers can make assertions.
+        """
+        env, obs = _make_env("hard")
+
+        # S0: triage (speed=1, completes immediately)
+        _delegate(env, "alert_triage", "triage_analyst")
+        # S1: alpha on enrich_logs (speed=2, will fail permanently)
+        _delegate(env, "enrich_logs", "investigator_alpha")
+        # S2: monitor on dashboards (speed=1, completes; alpha fails)
+        _delegate(env, "check_dashboards", "monitor")
+        # S3: retry enrich_logs with beta (speed=2)
+        _retry(env, "enrich_logs", "investigator_beta")
+        # S4: alpha on check_deps (speed=2; beta completes = recovery)
+        _delegate(env, "check_dependencies", "investigator_alpha")
+        # S5: communicator on notify (speed=1; alpha completes check_deps)
+        _delegate(env, "notify_stakeholders", "communicator")
+        # S6: senior on root_cause (speed=1, completes; SLA met step 6 ≤ 10)
+        _delegate(env, "root_cause_analysis", "senior_engineer")
+        # S7: deployer on hotfix (speed=2)
+        _delegate(env, "deploy_hotfix", "deployer")
+        # S8: communicator on status_page (speed=1; deployer completes)
+        _delegate(env, "update_status_page", "communicator")
+        # S9: senior on validate_fix (speed=1, completes)
+        _delegate(env, "validate_fix", "senior_engineer")
+        # S10: monitor on monitor_recovery (speed=1, completes; all 10 done)
+        _delegate(env, "monitor_recovery", "monitor")
+        # S11-12: monitoring patience waits (2 consecutive waits)
+        _wait(env)
+        _wait(env)  # deployer dropout fires at step 12 (idle, no impact)
+        # S13: synthesize
+        obs = _synthesize(env)
+
+        return env, obs
+
+    def test_all_subtasks_complete(self) -> None:
+        """All 10 subtasks should be completed after the walkthrough."""
+        env, obs = self._run_known_good_sequence()
+        assert obs.done is True
+        assert len(obs.completed_outputs) == 10
+        assert env._dag.is_all_completed()
+
+    def test_episode_terminates_with_bonus(self) -> None:
+        """Synthesize should trigger done + positive end bonus."""
+        env, obs = self._run_known_good_sequence()
+        assert obs.done is True
+        assert obs.reward > 0  # end bonus included
+        assert env._total_reward > 2.0  # verified: 2.2589
+
+    def test_time_and_budget(self) -> None:
+        """Verify time remaining and budget used match expected values."""
+        env, obs = self._run_known_good_sequence()
+        assert obs.time_remaining == 8  # 22 - 14 steps
+        assert env._pool.get_budget_used() == pytest.approx(30.0, abs=0.1)
+
+    def test_permanent_failure_and_recovery(self) -> None:
+        """Alpha fails permanently on enrich_logs, beta recovers."""
+        env, obs = self._run_known_good_sequence()
+        assert env._failures_occurred == 1  # alpha on enrich_logs
+        assert env._failures_recovered == 1  # beta succeeds on retry
+
+    def test_parallelism_detected(self) -> None:
+        """Should detect parallelism when 2+ tasks run concurrently."""
+        env, obs = self._run_known_good_sequence()
+        assert env._parallelism_events >= 3  # verified: 4
+
+    def test_deployer_goes_offline(self) -> None:
+        """Deployer should be offline after step 12 dropout event."""
+        env, obs = self._run_known_good_sequence()
+        assert env._pool.is_online("deployer") is False
+
+    def test_zero_capacity_violations(self) -> None:
+        """No capacity violations in the known-good sequence."""
+        env, obs = self._run_known_good_sequence()
+        assert env._capacity_violations == 0
+
+    def test_grader_score_above_threshold(self) -> None:
+        """Grader should score > 0.80 for the known-good walkthrough."""
+        from server.graders import grade_hard
+
+        env, obs = self._run_known_good_sequence()
+        log = _episode_store["hard"]
+        result = grade_hard(log)
+        assert result.score > 0.80
+        assert result.score <= 1.0
+
+    def test_grader_all_dimensions_present(self) -> None:
+        """All 9 grader dimensions should be present and non-negative."""
+        from server.graders import grade_hard
+
+        env, obs = self._run_known_good_sequence()
+        log = _episode_store["hard"]
+        result = grade_hard(log)
+
+        expected_keys = [
+            "completion", "recovery", "error_classification",
+            "capacity_discipline", "parallelism", "cost_efficiency",
+            "conflict_resolution", "sla_compliance", "monitoring_patience",
+        ]
+        for key in expected_keys:
+            assert key in result.breakdown, f"Missing grader dimension: {key}"
+            assert result.breakdown[key] >= 0.0, f"{key} is negative"
+
+    def test_grader_perfect_dimensions(self) -> None:
+        """Verify the known-good walkthrough scores perfectly on key dimensions."""
+        from server.graders import grade_hard
+
+        env, obs = self._run_known_good_sequence()
+        log = _episode_store["hard"]
+        result = grade_hard(log)
+
+        assert result.breakdown["completion"] == pytest.approx(0.20, abs=0.01)
+        assert result.breakdown["recovery"] == pytest.approx(0.15, abs=0.01)
+        assert result.breakdown["error_classification"] == pytest.approx(0.10, abs=0.01)
+        assert result.breakdown["capacity_discipline"] == pytest.approx(0.10, abs=0.01)
+        assert result.breakdown["conflict_resolution"] == pytest.approx(0.10, abs=0.01)
+        assert result.breakdown["sla_compliance"] == pytest.approx(0.10, abs=0.01)
+        assert result.breakdown["monitoring_patience"] == pytest.approx(0.05, abs=0.01)
+
+
+class TestHardTaskEdgeCases:
+    """Edge case tests for the hard task mechanics."""
+
+    def test_permanent_failure_retry_rejected(self) -> None:
+        """Retrying alpha on enrich_logs after permanent failure should be rejected."""
+        env, _ = _make_env("hard")
+        # S0: triage
+        _delegate(env, "alert_triage", "triage_analyst")
+        # S1: alpha on enrich_logs (will fail permanently)
+        _delegate(env, "enrich_logs", "investigator_alpha")
+        # S2: need another action for alpha to finish (speed=2)
+        _wait(env)
+        # Now enrich_logs is failed (permanent)
+        failed = [s for s in env.state.subtask_statuses
+                  if env.state.subtask_statuses[s] == "failed"]
+        assert "enrich_logs" in failed
+        # Retry with alpha should be rejected (permanent failure)
+        obs = _retry(env, "enrich_logs", "investigator_alpha")
+        assert len(obs.errors) == 1
+        assert "permanent" in obs.errors[0].lower()
+        assert obs.reward < 0  # penalty applied
+
+    def test_monitoring_patience_failure(self) -> None:
+        """Synthesizing immediately after all complete loses patience score."""
+        from server.graders import grade_hard
+
+        env, _ = _make_env("hard")
+        # Run the known-good sequence up to all subtasks complete (step 10)
+        _delegate(env, "alert_triage", "triage_analyst")
+        _delegate(env, "enrich_logs", "investigator_alpha")
+        _delegate(env, "check_dashboards", "monitor")
+        _retry(env, "enrich_logs", "investigator_beta")
+        _delegate(env, "check_dependencies", "investigator_alpha")
+        _delegate(env, "notify_stakeholders", "communicator")
+        _delegate(env, "root_cause_analysis", "senior_engineer")
+        _delegate(env, "deploy_hotfix", "deployer")
+        _delegate(env, "update_status_page", "communicator")
+        _delegate(env, "validate_fix", "senior_engineer")
+        _delegate(env, "monitor_recovery", "monitor")
+        # Synthesize immediately — NO patience waits
+        obs = _synthesize(env)
+        assert obs.done is True
+
+        log = _episode_store["hard"]
+        result = grade_hard(log)
+        assert result.breakdown["monitoring_patience"] == 0.0
+
+    def test_bad_episode_near_zero_score(self) -> None:
+        """Just waiting until timeout should score near 0."""
+        from server.graders import grade_hard
+
+        env, _ = _make_env("hard")
+        for _ in range(22):
+            _wait(env)
+        log = _episode_store["hard"]
+        result = grade_hard(log)
+        # Even doing nothing scores 0.3: error_classification(0.1) +
+        # capacity_discipline(0.1) + cost_efficiency(0.1) from "no harm done"
+        assert result.score <= 0.35
+        assert result.breakdown["completion"] == 0.0
+        assert result.breakdown["recovery"] == 0.0
+        assert result.breakdown["sla_compliance"] == 0.0
+        # All 9 keys should still be present
+        assert len(result.breakdown) == 9
+
+    def test_sla_penalty_when_delayed(self) -> None:
+        """Delaying root_cause past step 10 should incur SLA penalties."""
+        env, _ = _make_env("hard")
+        _delegate(env, "alert_triage", "triage_analyst")
+        # Wait until step 11+ without completing root_cause
+        for _ in range(11):
+            _wait(env)
+        # By now, step_count=12, root_cause not done → SLA penalties accrued
+        state = env.state
+        assert state.subtask_statuses["root_cause_analysis"] != "completed"
+        # Total reward should be negative due to SLA + unnecessary_wait penalties
+        assert env._total_reward < 0

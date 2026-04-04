@@ -11,7 +11,10 @@ from typing import Dict
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 
-from .models import OrchestratorAction, OrchestratorObservation, OrchestratorState
+try:
+    from .models import OrchestratorAction, OrchestratorObservation, OrchestratorState
+except ImportError:
+    from models import OrchestratorAction, OrchestratorObservation, OrchestratorState
 
 
 class OrchestratorClient(

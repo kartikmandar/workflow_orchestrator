@@ -373,12 +373,197 @@ _HARD_TASK = TaskConfig(
 )
 
 
+# ── Expert (Bonus): Life OS Daily Orchestration ──
+
+_EXPERT_TASK = TaskConfig(
+    task_id="expert",
+    name="Life OS Daily Orchestration",
+    difficulty="expert",
+    description="Orchestrate a user's day across health, career, and personal pillars",
+    subtask_definitions=[
+        {
+            "id": "morning_check_in",
+            "type": "context",
+            "dependencies": [],
+            "output_template": "Morning context loaded: sleep 5.2h, 3 meetings, friend's birthday",
+        },
+        {
+            "id": "assess_sleep_energy",
+            "type": "health_analysis",
+            "dependencies": ["morning_check_in"],
+            "output_template": "Sleep analysis: 5.2h (poor), energy low, recommend light day",
+        },
+        {
+            "id": "assess_career_deadlines",
+            "type": "career_analysis",
+            "dependencies": ["morning_check_in"],
+            "output_template": "Career analysis: client deadline Friday, 2 PRs pending review, full effort needed",
+        },
+        {
+            "id": "assess_personal_commitments",
+            "type": "personal_analysis",
+            "dependencies": ["morning_check_in"],
+            "output_template": "Personal analysis: friend's birthday call at 6PM, protect evening",
+        },
+        {
+            "id": "plan_day_schedule",
+            "type": "planning",
+            "dependencies": ["assess_sleep_energy", "assess_career_deadlines", "assess_personal_commitments"],
+            "output_template": "Day plan: light morning focus, deep work 10-12, health break, afternoon push, 6PM call",
+        },
+        {
+            "id": "start_focus_session",
+            "type": "focus_setup",
+            "dependencies": ["plan_day_schedule"],
+            "output_template": "Focus mode: notifications blocked, Slack DND, 90-min timer started",
+        },
+        {
+            "id": "process_inbox",
+            "type": "email_triage",
+            "dependencies": ["plan_day_schedule"],
+            "output_template": "Inbox processed: 3 urgent flagged, 12 archived, 2 delegated",
+        },
+        {
+            "id": "deep_work_block",
+            "type": "career_execution",
+            "dependencies": ["start_focus_session"],
+            "output_template": "Deep work complete: PR #247 submitted, client draft 80% done",
+        },
+        {
+            "id": "handle_urgent_request",
+            "type": "career_urgent",
+            "dependencies": ["process_inbox"],
+            "output_template": "Urgent handled: client deadline moved to Thursday, escalated to manager",
+        },
+        {
+            "id": "midday_health_check",
+            "type": "health_alert",
+            "dependencies": ["deep_work_block"],
+            "output_template": "Health alert: stress critical (HRV 22ms), mandatory 15-min break enforced",
+        },
+        {
+            "id": "resolve_priority_conflict",
+            "type": "conflict_resolution",
+            "dependencies": ["midday_health_check", "handle_urgent_request"],
+            "output_template": "Conflict resolved: 15-min break now, then client push, birthday call preserved at 6PM",
+        },
+        {
+            "id": "afternoon_execution",
+            "type": "career_execution",
+            "dependencies": ["resolve_priority_conflict"],
+            "output_template": "Afternoon complete: client deliverable submitted, PRs reviewed",
+        },
+        {
+            "id": "notify_stakeholders",
+            "type": "communication",
+            "dependencies": ["resolve_priority_conflict"],
+            "output_template": "Notifications sent: manager updated, birthday reminder set, health log saved",
+        },
+        {
+            "id": "synthesize_day_report",
+            "type": "communication",
+            "dependencies": ["afternoon_execution", "notify_stakeholders"],
+            "output_template": "Day report: health managed (break taken), career delivered (client + PRs), personal preserved (6PM call)",
+        },
+    ],
+    agent_definitions=[
+        {
+            "name": "companion",
+            "capabilities": [
+                "context", "health_analysis", "health_alert", "career_analysis",
+                "career_execution", "career_urgent", "personal_analysis", "planning",
+                "focus_setup", "email_triage", "conflict_resolution", "communication",
+            ],
+            "speed": 2,
+            "reliability": 0.90,
+            "cost_per_step": 3.0,
+        },
+        {
+            "name": "health_agent",
+            "capabilities": ["context", "health_analysis", "health_alert"],
+            "speed": 1,
+            "reliability": 0.85,
+            "cost_per_step": 1.5,
+        },
+        {
+            "name": "career_agent",
+            "capabilities": ["context", "career_analysis", "career_execution", "career_urgent"],
+            "speed": 2,
+            "reliability": 0.80,
+            "cost_per_step": 2.0,
+        },
+        {
+            "name": "focus_agent",
+            "capabilities": ["context", "focus_setup"],
+            "speed": 1,
+            "reliability": 0.95,
+            "cost_per_step": 1.0,
+        },
+        {
+            "name": "mail_agent",
+            "capabilities": ["context", "email_triage", "communication"],
+            "speed": 1,
+            "reliability": 0.85,
+            "cost_per_step": 1.0,
+        },
+        {
+            "name": "personal_agent",
+            "capabilities": ["context", "personal_analysis", "communication"],
+            "speed": 1,
+            "reliability": 0.90,
+            "cost_per_step": 0.5,
+        },
+        {
+            "name": "wellness_monitor",
+            "capabilities": ["context", "health_analysis"],
+            "speed": 2,
+            "reliability": 0.70,
+            "cost_per_step": 1.0,
+        },
+        {
+            "name": "executive_assistant",
+            "capabilities": [
+                "context", "planning", "career_analysis", "career_urgent",
+                "email_triage", "communication",
+            ],
+            "speed": 2,
+            "reliability": 0.75,
+            "cost_per_step": 2.0,
+        },
+    ],
+    constraints={
+        "time_budget": 25,
+        "capacity_limit": 3,
+        "cost_budget": 55.0,
+    },
+    reliability_overrides={
+        # Wellness monitor permanently can't do health_alert (lacks clinical-grade analysis)
+        ("wellness_monitor", "health_alert"): 0.0,
+        # Executive assistant permanently can't do conflict_resolution (can't reason across pillars)
+        ("executive_assistant", "conflict_resolution"): 0.0,
+    },
+    scheduled_events=[
+        {"step": 7, "event_type": "degradation", "target": "career_agent", "params": {"new_speed": 4}},
+        {"step": 10, "event_type": "dropout", "target": "personal_agent", "params": {}},
+    ],
+    sla_milestones={
+        "plan_day_schedule": 8,
+        "resolve_priority_conflict": 16,
+        "synthesize_day_report": 23,
+    },
+    seed=45,
+    sequential_time=14,
+    communication_subtasks=["notify_stakeholders", "synthesize_day_report"],
+)
+
+
 # ── Registry ──
 
 _TASKS: dict[str, TaskConfig] = {
     "easy": _EASY_TASK,
     "medium": _MEDIUM_TASK,
     "hard": _HARD_TASK,
+    "expert": _EXPERT_TASK,
 }
 
 

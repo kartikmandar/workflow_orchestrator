@@ -13,243 +13,163 @@ tags:
 
 # Workflow Orchestrator Environment
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+An OpenEnv environment where an LLM agent acts as a **project coordinator**, managing DAG-based workflows of subtasks across simulated specialist agents with varying capabilities, failure rates, and cost profiles. Tests coordination, delegation, parallelism, failure recovery, and cost management.
 
-## Quick Start
+## Motivation
 
-The simplest way to use the Workflow Orchestrator environment is through the `WorkflowOrchestratorEnv` class:
+Agent orchestration is the #1 enterprise AI trend — yet LLMs are terrible at it. Research documents 14+ failure modes in multi-agent systems (MAST taxonomy), up to 17x error amplification in unstructured networks (Spark to Fire), and only 25% baseline correctness with GPT-4o (ChatDev). This environment provides a controlled, deterministic testbed for training and evaluating LLM orchestration capabilities across three real-world scenarios: software development, CI/CD deployment, and production incident response.
 
-```python
-from workflow_orchestrator import WorkflowOrchestratorAction, WorkflowOrchestratorEnv
+## Action Space
 
-try:
-    # Create environment from Docker image
-    workflow_orchestratorenv = WorkflowOrchestratorEnv.from_docker_image("workflow_orchestrator-env:latest")
+| Field | Type | Description |
+|-------|------|-------------|
+| `action_type` | `"delegate"\|"retry"\|"wait"\|"synthesize"\|"abort"` | Which action to take |
+| `subtask_id` | `Optional[str]` | Target subtask (required for delegate/retry/abort) |
+| `agent_name` | `Optional[str]` | Agent to assign (required for delegate/retry) |
 
-    # Reset
-    result = workflow_orchestratorenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
+**Actions:**
+- **delegate**: Assign a ready subtask to an idle, capable agent
+- **retry**: Re-assign a failed subtask (same or different agent)
+- **wait**: Advance time by 1 step; working agents tick
+- **synthesize**: Combine all completed outputs (only valid when all subtasks done)
+- **abort**: Permanently fail a non-completed subtask
 
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
+Invalid actions are accepted but penalized — the step is consumed, a penalty is applied, and state remains unchanged.
 
-    for msg in messages:
-        result = workflow_orchestratorenv.step(WorkflowOrchestratorAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
+## Observation Space
 
-finally:
-    # Always clean up
-    workflow_orchestratorenv.close()
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_description` | `str` | Natural-language task objective |
+| `subtasks` | `list[SubtaskInfo]` | Status of each subtask in the DAG |
+| `agents` | `list[AgentInfo]` | Status of each simulated agent |
+| `completed_outputs` | `dict[str, str]` | Outputs from finished subtasks |
+| `errors` | `list[str]` | Errors from the current step |
+| `time_remaining` | `int` | Steps left before timeout |
+| `time_elapsed` | `int` | Steps taken so far |
+| `capacity_limit` | `int` | Max concurrent in-progress tasks |
+| `active_task_count` | `int` | Currently in-progress task count |
+| `budget_remaining` | `Optional[float]` | Cost budget left (None if unlimited) |
+| `budget_used` | `float` | Cost spent so far |
+| `available_actions` | `list[str]` | Which action types are currently valid |
+| `hint` | `Optional[str]` | One-line suggestion for the agent |
+| `done` | `bool` | Whether the episode has ended |
+| `reward` | `float\|None` | Step reward |
 
-That's it! The `WorkflowOrchestratorEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
+## Tasks
 
-## Building the Docker Image
+### Easy: Feature Development Sprint
+- **6 subtasks**: technical_design -> implement_backend -> [implement_frontend, write_tests] -> run_tests -> review_and_merge
+- **4 agents**: All reliable (1.0), speed=1, cost=1.0
+- **Constraints**: time=15, capacity=4, no cost budget
+- **Challenge**: Basic delegation ordering + optional parallel fan-out
 
-Before using the environment, you need to build the Docker image:
+### Medium: Microservice Deployment Pipeline
+- **9 subtasks**: checkout -> [lint, unit_tests, security_scan] -> build -> push -> staging -> smoke_tests -> production
+- **5 agents**: Varying speed (1-2), cost (1.0-3.0), reliability
+- **Constraints**: time=16, capacity=3, cost_budget=35.0
+- **Challenge**: 3-way parallelism, guaranteed security scan failure requiring retry, cost awareness
 
-```bash
-# From project root
-docker build -t workflow_orchestrator-env:latest -f server/Dockerfile .
-```
+### Hard: Production Incident Response
+- **10 subtasks**: triage -> [enrich_logs, check_dashboards, check_dependencies] -> root_cause -> hotfix -> validate -> monitor + side channels
+- **7 agents**: Overlapping capabilities, costs 1.0-5.0
+- **Constraints**: time=22, capacity=3, cost_budget=40.0
+- **Challenge**: Permanent failure trap (investigator_alpha on enrich_logs), agent dropout at step 12, SLA milestones, conflicting findings, monitoring patience
 
-## Deploying to Hugging Face Spaces
+### Expert (Bonus): Life OS Daily Orchestration
+- **14 subtasks**: morning_check_in -> [assess_sleep, assess_career, assess_personal] -> plan_day -> [focus, inbox] -> [deep_work, handle_urgent] -> midday_health -> resolve_conflict -> [afternoon, notify] -> synthesize_report
+- **8 agents**: Including 2 permanent failure traps (wellness_monitor, executive_assistant)
+- **Constraints**: time=25, capacity=3, cost_budget=55.0
+- **Challenge**: Multi-objective optimization across health/career/personal pillars, career_agent speed degradation at step 7, personal_agent dropout at step 10, 3 SLA milestones, 2 conflict resolution points
 
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
+## Reward Design
 
-```bash
-# From the environment directory (where openenv.yaml is located)
-openenv push
+Dense per-step rewards with 7 positive and 9 negative signals:
 
-# Or specify options
-openenv push --namespace my-org --private
-```
+| Signal | Value | Trigger |
+|--------|-------|---------|
+| correct_delegation | +0.05 | Right agent for right subtask |
+| subtask_completed | +0.08 | Agent finishes successfully |
+| parallelism_exploited | +0.10 | 2+ tasks concurrent |
+| failure_recovered | +0.10 | Retry succeeds after failure |
+| efficient_wait | +0.03 | Wait when nothing delegatable |
+| dependency_violation | -0.10 | Delegate blocked subtask |
+| capacity_violation | -0.15 | Exceed concurrent limit |
+| permanent_retry | -0.06 | Retry permanently failing agent |
 
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
+End-of-episode: +0.20 (all complete + synthesized), +0.10 * time_efficiency, +0.05 * cost_efficiency, -0.10 (incomplete).
 
-### Prerequisites
+## Baseline Scores
 
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
+| Task | Score | Model |
+|------|-------|-------|
+| Easy | 0.900 | Qwen/Qwen3-32B |
+| Medium | 0.633 | Qwen/Qwen3-32B |
+| Hard | 0.808 | Qwen/Qwen3-32B |
+| Expert | 0.802 | Qwen/Qwen3-32B |
 
-### Options
+## Setup
 
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
-
-```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
-```
-
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
-
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
-
-## Environment Details
-
-### Action
-**WorkflowOrchestratorAction**: Contains a single field
-- `message` (str) - The message to echo back
-
-### Observation
-**WorkflowOrchestratorObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
-
-### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
-
-## Advanced Usage
-
-### Connecting to an Existing Server
-
-If you already have a Workflow Orchestrator environment server running, you can connect directly:
-
-```python
-from workflow_orchestrator import WorkflowOrchestratorEnv
-
-# Connect to existing server
-workflow_orchestratorenv = WorkflowOrchestratorEnv(base_url="<ENV_HTTP_URL_HERE>")
-
-# Use as normal
-result = workflow_orchestratorenv.reset()
-result = workflow_orchestratorenv.step(WorkflowOrchestratorAction(message="Hello!"))
-```
-
-Note: When connecting to an existing server, `workflow_orchestratorenv.close()` will NOT stop the server.
-
-### Using the Context Manager
-
-The client supports context manager usage for automatic connection management:
-
-```python
-from workflow_orchestrator import WorkflowOrchestratorAction, WorkflowOrchestratorEnv
-
-# Connect with context manager (auto-connects and closes)
-with WorkflowOrchestratorEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-    # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(WorkflowOrchestratorAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
-```
-
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
-
-### Concurrent WebSocket Sessions
-
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
-
-```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    WorkflowOrchestratorEnvironment,  # Pass class, not instance
-    WorkflowOrchestratorAction,
-    WorkflowOrchestratorObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
-```
-
-Then multiple clients can connect simultaneously:
-
-```python
-from workflow_orchestrator import WorkflowOrchestratorAction, WorkflowOrchestratorEnv
-from concurrent.futures import ThreadPoolExecutor
-
-def run_episode(client_id: int):
-    with WorkflowOrchestratorEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            result = env.step(WorkflowOrchestratorAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
-
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
-```
-
-## Development & Testing
-
-### Direct Environment Testing
-
-Test the environment logic directly without starting the HTTP server:
+### Local Development
 
 ```bash
-# From the server directory
-python3 server/workflow_orchestrator_environment.py
+cd workflow_orchestrator
+uv sync
+uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
 ```
 
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
-
-### Running Locally
-
-Run the server locally for development:
+### Docker
 
 ```bash
-uvicorn server.app:app --reload
+docker build -t workflow-orchestrator .
+docker run -p 8000:8000 workflow-orchestrator
 ```
+
+### Running Inference
+
+```bash
+export HF_TOKEN=<your-token>
+export API_BASE_URL=https://router.huggingface.co/v1
+export MODEL_NAME=Qwen/Qwen3-32B
+python inference.py
+```
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/reset` | POST | Reset environment, returns observation |
+| `/step` | POST | Execute action, returns observation |
+| `/state` | GET | Current environment state |
+| `/tasks` | GET | List all available tasks |
+| `/grader` | POST | Grade most recent episode |
+| `/baseline` | POST | Return pre-computed baseline scores |
+| `/health` | GET | Container health check |
+| `/web` | GET | Interactive web interface |
+| `/ws` | WS | WebSocket for persistent sessions |
 
 ## Project Structure
 
 ```
 workflow_orchestrator/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # WorkflowOrchestratorEnv client
-├── models.py              # Action and Observation models
-└── server/
-    ├── __init__.py        # Server module exports
-    ├── workflow_orchestrator_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
+├── openenv.yaml             # OpenEnv manifest
+├── pyproject.toml            # Dependencies and metadata
+├── Dockerfile                # Multi-stage Docker build
+├── README.md                 # This file
+├── inference.py              # Baseline inference script
+├── baseline_scores.json      # Pre-computed baseline scores
+├── requirements.txt          # Pip-compatible dependencies
+├── models.py                 # Pydantic Action/Observation/State models
+├── client.py                 # OrchestratorClient (EnvClient subclass)
+├── __init__.py               # Module exports
+├── server/
+│   ├── app.py               # FastAPI application + custom endpoints
+│   ├── environment.py        # Core environment (reset/step/state)
+│   ├── dag_executor.py       # DAG state tracking + dependency resolution
+│   ├── agent_pool.py         # Simulated agent state machines
+│   ├── reward_calculator.py  # Dense reward computation
+│   ├── graders.py            # Per-task grading functions
+│   ├── task_registry.py      # Easy/medium/hard task configurations
+│   └── observation_formatter.py  # Text rendering for LLM consumption
+└── tests/                    # 137 passing tests
 ```

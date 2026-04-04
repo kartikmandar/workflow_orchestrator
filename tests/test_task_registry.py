@@ -39,18 +39,18 @@ class TestTaskRegistry:
 
     def test_list_tasks(self) -> None:
         tasks = list_tasks()
-        assert len(tasks) == 3
+        assert len(tasks) >= 3
         ids = {t.task_id for t in tasks}
-        assert ids == {"easy", "medium", "hard"}
+        assert {"easy", "medium", "hard"}.issubset(ids)
 
-    @pytest.mark.parametrize("task_id", ["easy", "medium", "hard"])
+    @pytest.mark.parametrize("task_id", ["easy", "medium", "hard", "expert"])
     def test_dag_is_valid(self, task_id: str) -> None:
         """Every task's subtask definitions form a valid DAG (no cycles)."""
         config = get_task(task_id)
         dag = DAGExecutor(config.subtask_definitions)
         assert dag is not None
 
-    @pytest.mark.parametrize("task_id", ["easy", "medium", "hard"])
+    @pytest.mark.parametrize("task_id", ["easy", "medium", "hard", "expert"])
     def test_all_subtask_types_have_capable_agent(self, task_id: str) -> None:
         """Every subtask type has at least one agent that can handle it."""
         config = get_task(task_id)

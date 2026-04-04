@@ -287,6 +287,191 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
     )
 
 
+# ── Expert grader helpers ──
+
+
+def subtask_completed_check(log: EpisodeLog, subtask_id: str) -> bool:
+    """Check if a specific subtask was completed."""
+    for event in log.events:
+        if event.event_type == "subtask_completed" and event.data.get("subtask_id") == subtask_id:
+            return True
+    return False
+
+
+def subtask_completed_by_agent(log: EpisodeLog, subtask_id: str, agent_name: str) -> bool:
+    """Check if a subtask was completed by a specific agent."""
+    for event in log.events:
+        if (
+            event.event_type == "subtask_completed"
+            and event.data.get("subtask_id") == subtask_id
+            and event.data.get("agent_name") == agent_name
+        ):
+            return True
+    return False
+
+
+def subtask_completed_by_any_agent(
+    log: EpisodeLog, subtask_id: str, agent_names: list[str]
+) -> bool:
+    """Check if a subtask was completed by any of the listed agents."""
+    for event in log.events:
+        if (
+            event.event_type == "subtask_completed"
+            and event.data.get("subtask_id") == subtask_id
+            and event.data.get("agent_name") in agent_names
+        ):
+            return True
+    return False
+
+
+def subtask_completed_before(log: EpisodeLog, subtask_id: str, deadline_step: int) -> bool:
+    """Check if a subtask completed at or before a given step."""
+    for event in log.events:
+        if (
+            event.event_type == "subtask_completed"
+            and event.data.get("subtask_id") == subtask_id
+            and event.step <= deadline_step
+        ):
+            return True
+    return False
+
+
+def subtask_not_completed_by_agent(
+    log: EpisodeLog, subtask_id: str, excluded_agents: list[str]
+) -> bool:
+    """Check if subtask was completed by an agent NOT in the excluded list."""
+    for event in log.events:
+        if (
+            event.event_type == "subtask_completed"
+            and event.data.get("subtask_id") == subtask_id
+            and event.data.get("agent_name") not in excluded_agents
+        ):
+            return True
+    return False
+
+
+# ── Expert grader ──
+
+
+def grade_expert(log: EpisodeLog) -> GradeResult:
+    """Grade an expert task episode (Life OS Daily Orchestration).
+
+    10 dimensions: completion(0.15), health(0.12), career(0.10),
+    conflict(0.20), cost(0.08), parallelism(0.10), time(0.05),
+    error_class(0.08), sla(0.08), communication(0.04).
+    """
+    breakdown: dict[str, float] = {}
+
+    # 1. Completion: 15%
+    completed = count_completed_subtasks(log)
+    breakdown["completion"] = (completed / 14) * 0.15
+
+    # 2. Health pillar: 12%
+    health_score = 0.0
+    if subtask_completed_check(log, "assess_sleep_energy"):
+        health_score += 0.3
+    if subtask_not_completed_by_agent(log, "midday_health_check", ["wellness_monitor"]):
+        health_score += 0.4
+    if subtask_completed_before(log, "midday_health_check", 15):
+        health_score += 0.3
+    breakdown["health_pillar"] = health_score * 0.12
+
+    # 3. Career throughput: 10%
+    career_score = 0.0
+    if subtask_completed_check(log, "deep_work_block"):
+        career_score += 0.4
+    if subtask_completed_check(log, "handle_urgent_request"):
+        career_score += 0.3
+    if subtask_completed_check(log, "afternoon_execution"):
+        career_score += 0.3
+    breakdown["career_pillar"] = career_score * 0.10
+
+    # 4. Conflict resolution: 20% (unique challenge)
+    conflict_score = 0.0
+    if subtask_completed_by_any_agent(log, "plan_day_schedule", ["companion", "executive_assistant"]):
+        conflict_score += 0.3
+    if subtask_completed_by_agent(log, "resolve_priority_conflict", "companion"):
+        conflict_score += 0.4
+    if both_findings_aggregated_expert(log):
+        conflict_score += 0.3
+    breakdown["conflict_resolution"] = conflict_score * 0.20
+
+    # 5. Cost efficiency: 8%
+    budget_used = get_total_budget_used(log)
+    cost_ratio = budget_used / 55.0 if 55.0 > 0 else 0
+    if cost_ratio <= 0.75:
+        breakdown["cost_efficiency"] = 0.08
+    elif cost_ratio <= 1.0:
+        breakdown["cost_efficiency"] = (1.0 - cost_ratio) / 0.25 * 0.08
+    else:
+        breakdown["cost_efficiency"] = 0.0
+
+    # 6. Parallelism: 10%
+    parallel_score = 0.0
+    # Morning assessments (3-way)
+    if fan_out_parallelism_detected(log, ["assess_sleep_energy", "assess_career_deadlines"]):
+        parallel_score += 0.4
+    # Focus + inbox (2-way)
+    if fan_out_parallelism_detected(log, ["start_focus_session", "process_inbox"]):
+        parallel_score += 0.3
+    # Afternoon + notify (2-way)
+    if fan_out_parallelism_detected(log, ["afternoon_execution", "notify_stakeholders"]):
+        parallel_score += 0.3
+    breakdown["parallelism"] = parallel_score * 0.10
+
+    # 7. Time efficiency: 5%
+    if episode_completed(log) and log.time_remaining > 0:
+        breakdown["time_efficiency"] = (log.time_remaining / 25) * 0.05
+    else:
+        breakdown["time_efficiency"] = 0.0
+
+    # 8. Error classification: 8%
+    perm_retries = count_retries_on_permanent_failure(log)
+    breakdown["error_classification"] = max(0.0, 1.0 - 0.5 * perm_retries) * 0.08
+
+    # 9. SLA compliance: 8%
+    sla_milestones = {"plan_day_schedule": 8, "resolve_priority_conflict": 16, "synthesize_day_report": 23}
+    milestones_met = count_sla_milestones_met(log, sla_milestones)
+    breakdown["sla_compliance"] = (milestones_met / 3) * 0.08
+
+    # 10. Communication: 4%
+    breakdown["communication"] = 0.04 if subtask_completed_check(log, "notify_stakeholders") else 0.0
+
+    score = sum(breakdown.values())
+
+    # Penalty for invalid actions (max -0.15)
+    invalid_count = count_invalid_actions(log)
+    score -= min(0.15, 0.03 * invalid_count)
+    score = max(0.0, min(1.0, score))
+
+    return GradeResult(
+        score=round(score, 4),
+        breakdown={k: round(v, 4) for k, v in breakdown.items()},
+    )
+
+
+def both_findings_aggregated_expert(log: EpisodeLog) -> bool:
+    """Check if both conflict resolution inputs completed before their consumer.
+
+    For plan_day_schedule: all 3 assessments must complete before it.
+    For resolve_priority_conflict: both midday_health_check and handle_urgent_request must complete before it.
+    Returns True if at least one conflict point has both inputs resolved.
+    """
+    # Check resolve_priority_conflict: needs midday_health_check + handle_urgent_request
+    health_done = False
+    urgent_done = False
+    for event in log.events:
+        if event.event_type == "subtask_completed":
+            sid = event.data.get("subtask_id", "")
+            if sid == "midday_health_check":
+                health_done = True
+            elif sid == "handle_urgent_request":
+                urgent_done = True
+            elif sid == "resolve_priority_conflict":
+                return health_done and urgent_done
+    return False
+
+
 # ── Dispatcher ──
 
 
@@ -294,6 +479,7 @@ _GRADERS = {
     "easy": grade_easy,
     "medium": grade_medium,
     "hard": grade_hard,
+    "expert": grade_expert,
 }
 
 
