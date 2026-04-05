@@ -219,7 +219,10 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
     if budget_total and budget_total > 0:
         cost_eff = 0.10 * max(0.0, 1.0 - budget_used / budget_total)
 
-    score = max(0.0, min(1.0, completion + parallelism + recovery + time_eff + cost_eff))
+    invalid_count = count_invalid_actions(log)
+    penalty = min(0.10, invalid_count * 0.03)
+
+    score = max(0.0, min(1.0, completion + parallelism + recovery + time_eff + cost_eff - penalty))
 
     return GradeResult(
         score=round(score, 4),
@@ -229,6 +232,7 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
             "recovery": round(recovery, 4),
             "time_efficiency": round(time_eff, 4),
             "cost_efficiency": round(cost_eff, 4),
+            "invalid_penalty": round(-penalty, 4),
         },
     )
 
@@ -243,7 +247,15 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
     completed = count_completed_subtasks(log)
     completion = (completed / 10) * 0.20
 
-    recovery = 0.15 if failure_recovered(log, "enrich_logs") else 0.0
+    # Recovery: 0.15 split across two designed failure scenarios
+    # - enrich_logs: investigator_alpha permanently fails (must use different agent)
+    # - deploy_hotfix: deployer goes offline at step 12 (must use senior_engineer)
+    recovery_count = 0
+    if failure_recovered(log, "enrich_logs"):
+        recovery_count += 1
+    if failure_recovered(log, "deploy_hotfix"):
+        recovery_count += 1
+    recovery = 0.15 * (recovery_count / 2) if recovery_count > 0 else 0.0
 
     perm_retries = count_retries_on_permanent_failure(log)
     error_class = 0.10 * max(0.0, 1.0 - 0.5 * perm_retries)
@@ -266,9 +278,12 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
 
     patience = 0.05 if monitoring_completed(log) else 0.0
 
+    invalid_count = count_invalid_actions(log)
+    invalid_penalty = min(0.10, invalid_count * 0.03)
+
     score = max(0.0, min(1.0,
         completion + recovery + error_class + capacity + parallelism
-        + cost_eff + conflict + sla + patience
+        + cost_eff + conflict + sla + patience - invalid_penalty
     ))
 
     return GradeResult(
@@ -283,6 +298,7 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
             "conflict_resolution": round(conflict, 4),
             "sla_compliance": round(sla, 4),
             "monitoring_patience": round(patience, 4),
+            "invalid_penalty": round(-invalid_penalty, 4),
         },
     )
 

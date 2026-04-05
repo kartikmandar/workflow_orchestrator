@@ -43,9 +43,13 @@ except ImportError:
     from server.task_registry import TaskConfig, get_task
 
 
-# Module-level store: latest episode log per task_id.
+# Module-level store: latest episode log per task_id AND by episode_id.
 # Shared between environment instances and the /grader endpoint.
+# _episode_store keyed by task_id stores the most recent episode for that task
+# (used by /grader when only task_id is provided).
+# _episode_store_by_id keyed by episode_id for concurrent session safety.
 _episode_store: dict[str, EpisodeLog] = {}
+_episode_store_by_id: dict[str, EpisodeLog] = {}
 
 
 class OrchestratorEnvironment(
@@ -167,6 +171,13 @@ class OrchestratorEnvironment(
         **kwargs: Any,
     ) -> OrchestratorObservation:
         """Take a step in the environment."""
+        # Guard: reject steps after episode is done
+        if self._done:
+            return self._build_observation(
+                reward=0.0,
+                errors=["Episode is already done. Call reset() to start a new episode."],
+            )
+
         errors_this_step: list[str] = []
         events_this_step: list[dict[str, Any]] = []
 
@@ -291,8 +302,9 @@ class OrchestratorEnvironment(
                 "total_reward": self._total_reward,
             })
 
-            # Store for grader access
+            # Store for grader access (both by task_id and episode_id)
             _episode_store[self._config.task_id] = self._log
+            _episode_store_by_id[self._state_obj.episode_id] = self._log
 
         # Step 11: Update internal state + build observation
         self._state_obj = OrchestratorState(
@@ -520,13 +532,21 @@ class OrchestratorEnvironment(
         if self._done:
             return None
 
-        # Priority 1: Failed subtask + idle capable agent
+        # Priority 1: Failed subtask + idle capable agent (excluding permanently failing agents)
         failed = self._dag.get_failed_subtasks()
         for f in failed:
             st_type = self._dag.get_subtask_type(f)
+            attempt_count = self._dag.get_subtask_attempt_count(f)
             capable = self._pool.get_capable_agents(st_type)
-            if capable:
-                return f"Retry '{f}' with '{capable[0]}'"
+            # Filter out agents that will permanently fail on this subtask type
+            viable = [
+                a for a in capable
+                if self._pool.get_effective_reliability(a, st_type, attempt_count) > 0.0
+            ]
+            if viable:
+                return f"Retry '{f}' with '{viable[0]}'"
+            elif capable:
+                return f"'{f}' failed — all capable agents have permanent failures, try a different agent"
 
         # Priority 2: Ready subtasks + idle agents
         ready = self._dag.get_ready_subtasks()
@@ -549,21 +569,11 @@ class OrchestratorEnvironment(
     def _get_effective_reliability(
         self, agent_name: str, subtask_type: str, attempt_count: int
     ) -> float:
-        """Check reliability override for permanent failure detection.
+        """Check reliability for permanent failure detection.
 
-        Replicates agent_pool._get_effective_reliability logic since
-        that function is not public API.
+        Delegates to AgentPool.get_effective_reliability() to avoid
+        duplicating reliability override logic.
         """
-        overrides = self._config.reliability_overrides
-        key = (agent_name, subtask_type)
-        override = overrides.get(key)
-        if override is None:
-            # Use default from agent definitions
-            for defn in self._config.agent_definitions:
-                if defn["name"] == agent_name:
-                    return defn["reliability"]
-            return 1.0
-        if isinstance(override, list):
-            idx = min(attempt_count, len(override) - 1)
-            return override[idx]
-        return override
+        return self._pool.get_effective_reliability(
+            agent_name, subtask_type, attempt_count
+        )

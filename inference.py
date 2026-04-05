@@ -13,7 +13,6 @@ import asyncio
 import json
 import os
 import re
-import textwrap
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,34 +41,39 @@ IMAGE_NAME: Optional[str] = os.getenv("IMAGE_NAME")
 ENV_URL: str = os.getenv("ENV_URL") or "http://localhost:8000"
 BENCHMARK: str = "workflow_orchestrator"
 TEMPERATURE: float = 0.0
-MAX_TOKENS: int = 200
+MAX_TOKENS: int = 4096  # High ceiling for verbose models; concise models just use fewer tokens
 MAX_STEPS: int = 50
 SUCCESS_SCORE_THRESHOLD: float = 0.1
-TASK_TIMEOUT_S: int = 300
+TASK_TIMEOUT_S: int = 600  # 10 min per task; total 4 tasks fits in 20 min hackathon limit
+HISTORY_WINDOW: int = 4  # Last 4 turns — enough for context without bloating input tokens
 
 VALID_ACTIONS: set[str] = {"delegate", "retry", "wait", "synthesize", "abort"}
 
 llm: OpenAI = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-SYSTEM_PROMPT: str = textwrap.dedent("""
-    You are a workflow orchestrator managing specialist agents to complete a DAG of subtasks.
+# Model-agnostic system prompt — no Qwen-specific /no_think, JSON-first structure
+SYSTEM_PROMPT: str = """OUTPUT FORMAT: Respond with ONLY a single JSON object. No explanations, no reasoning text, no markdown.
 
-    ACTIONS you can take (respond as JSON):
-    - delegate(subtask_id, agent_name): Assign a READY subtask to an IDLE agent whose capabilities include the subtask's type.
-    - retry(subtask_id, agent_name): Re-assign a FAILED subtask. If the error says "permanent failure" or "lacks required tooling", you MUST pick a DIFFERENT agent — retrying the same one will always fail.
-    - wait(): Let time pass. Working agents make progress.
-    - synthesize(): Combine all outputs into the final deliverable. Only valid when EVERY subtask is COMPLETED.
-    - abort(subtask_id): Permanently cancel a subtask (last resort).
+You are a workflow orchestrator managing specialist agents to complete a DAG of subtasks.
 
-    STRATEGY TIPS:
-    - Maximize parallelism: if multiple READY subtasks exist and idle agents are available, delegate them all before waiting.
-    - Respect the capacity limit shown in the status.
-    - After a fix is validated, consider waiting a couple of steps to monitor stability before synthesizing.
-    - Prefer cheaper agents (lower cost_per_step) when multiple agents can handle the same task type.
-    - Don't wait when there are READY subtasks and idle capable agents — that wastes time.
+ACTIONS (as JSON):
+{"action_type": "delegate", "subtask_id": "<id>", "agent_name": "<name>"}
+{"action_type": "retry", "subtask_id": "<id>", "agent_name": "<name>"}
+{"action_type": "wait"}
+{"action_type": "synthesize"}
+{"action_type": "abort", "subtask_id": "<id>"}
 
-    Respond with ONLY a JSON object: {"action_type": "...", "subtask_id": "...", "agent_name": "..."} /no_think
-""").strip()
+RULES:
+1. delegate: Assign a READY subtask to an IDLE agent whose capabilities include the subtask type.
+2. retry: Re-assign a FAILED subtask. If error says "permanent failure" or "lacks required tooling", you MUST pick a DIFFERENT agent.
+3. wait: ONLY use when no READY subtasks exist OR all capable agents are busy.
+4. synthesize: ONLY when ALL subtasks are COMPLETED.
+5. NEVER wait when READY subtasks and idle capable agents exist — delegate instead.
+6. Maximize parallelism: delegate multiple ready subtasks across steps before waiting.
+7. Prefer cheaper agents (lower cost_per_step) when multiple can handle the same task type.
+8. After a fix is validated, wait 2 steps to monitor stability before synthesizing.
+
+Respond with a single JSON object. Nothing else."""
 
 
 # ── Mandatory stdout logging ──
@@ -114,12 +118,16 @@ def format_observation(obs: OrchestratorObservation) -> str:
         budget_total: float = obs.budget_used + obs.budget_remaining
         budget_str = f" | Budget: {obs.budget_used:.1f}/{budget_total:.1f} used"
 
-    lines.append("=== WORKFLOW ORCHESTRATOR ===")
+    lines.append("=== WORKFLOW STATUS ===")
     lines.append(f"Task: {obs.task_description}")
     lines.append(
-        f"Step: {obs.time_elapsed} of {time_total} | "
+        f"Step: {obs.time_elapsed}/{time_total} | "
         f"Active: {obs.active_task_count}/{obs.capacity_limit}{budget_str}"
     )
+
+    # Hint at top for visibility (verbose models may not read to the end)
+    if obs.hint:
+        lines.append(f">>> HINT: {obs.hint}")
     lines.append("")
 
     # Subtasks
@@ -167,17 +175,41 @@ def format_observation(obs: OrchestratorObservation) -> str:
     # Available actions
     lines.append(f"Available actions: {', '.join(obs.available_actions)}")
 
-    if obs.hint:
-        lines.append(f"Hint: {obs.hint}")
-
     return "\n".join(lines)
 
 
 # ── Action parsing ──
 
 
+def _is_valid_action(parsed: Dict[str, Any]) -> bool:
+    """Check if a parsed action dict has a valid action_type and non-placeholder values."""
+    if not isinstance(parsed, dict):
+        return False
+    if parsed.get("action_type") not in VALID_ACTIONS:
+        return False
+
+    # Reject placeholder values (Nemotron outputs "...", "<id>", "<name>" etc.)
+    placeholder_patterns: set[str] = {"...", "<id>", "<name>", "id", "name", ""}
+    for key in ("subtask_id", "agent_name"):
+        val = parsed.get(key)
+        if val is not None and not isinstance(val, str):
+            parsed[key] = None  # Non-string values (int, bool, etc.)
+        elif val is not None and (
+            val in placeholder_patterns
+            or val.startswith("<")
+            or val.startswith("...")
+        ):
+            parsed[key] = None  # Clear placeholder, let validation catch it
+
+    return True
+
+
 def parse_llm_action(response_text: str) -> Dict[str, Any]:
-    """Parse LLM response into action dict. Falls back to wait on failure."""
+    """Parse LLM response into action dict. Falls back to wait on failure.
+
+    Handles: direct JSON, <think> tags, markdown code blocks, embedded JSON in reasoning text.
+    Rejects placeholder values like "..." or "<id>" that verbose models produce.
+    """
     if not response_text:
         return {"action_type": "wait"}
 
@@ -189,7 +221,7 @@ def parse_llm_action(response_text: str) -> Dict[str, Any]:
     # Try direct JSON parse
     try:
         parsed: Dict[str, Any] = json.loads(text)
-        if isinstance(parsed, dict) and parsed.get("action_type") in VALID_ACTIONS:
+        if _is_valid_action(parsed):
             return parsed
     except (json.JSONDecodeError, TypeError):
         pass
@@ -199,17 +231,26 @@ def parse_llm_action(response_text: str) -> Dict[str, Any]:
     if code_match:
         try:
             parsed = json.loads(code_match.group(1))
-            if isinstance(parsed, dict) and parsed.get("action_type") in VALID_ACTIONS:
+            if _is_valid_action(parsed):
                 return parsed
         except (json.JSONDecodeError, TypeError):
             pass
 
-    # Try extracting any JSON object
+    # Try extracting JSON object containing action_type (handles reasoning + JSON)
+    for json_match in re.finditer(r"\{[^{}]*\"action_type\"[^{}]*\}", text):
+        try:
+            parsed = json.loads(json_match.group(0))
+            if _is_valid_action(parsed):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    # Last resort: try any JSON-like object
     json_match = re.search(r"\{[^{}]*\}", text)
     if json_match:
         try:
             parsed = json.loads(json_match.group(0))
-            if isinstance(parsed, dict) and parsed.get("action_type") in VALID_ACTIONS:
+            if _is_valid_action(parsed):
                 return parsed
         except (json.JSONDecodeError, TypeError):
             pass
@@ -217,17 +258,40 @@ def parse_llm_action(response_text: str) -> Dict[str, Any]:
     return {"action_type": "wait"}
 
 
+def _call_llm(messages: List[Dict[str, str]]) -> str:
+    """Synchronous LLM call — designed to be run via asyncio.to_thread()."""
+    try:
+        completion = llm.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+            stream=False,
+        )
+        return completion.choices[0].message.content or ""
+    except Exception as exc:
+        print(f"[DEBUG] LLM call failed: {exc}", flush=True)
+        return ""
+
+
 # ── Task runner ──
 
 
 async def run_task(task_id: str, env: OrchestratorClient) -> float:
-    """Run a single task episode with mandatory stdout logging."""
+    """Run a single task episode with mandatory stdout logging.
+
+    Uses conversation history (sliding window) so the LLM can track its
+    prior actions and make coherent multi-step decisions.
+    """
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
     rewards: List[float] = []
     steps_taken: int = 0
     score: float = 0.0
     success: bool = False
+
+    # Conversation history: sliding window of recent turns
+    history: List[Dict[str, str]] = []
 
     try:
         result = await env.reset(task_id=task_id)
@@ -238,24 +302,27 @@ async def run_task(task_id: str, env: OrchestratorClient) -> float:
 
             obs_text: str = format_observation(result.observation)
 
-            # Call LLM
-            try:
-                completion = llm.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": obs_text},
-                    ],
-                    temperature=TEMPERATURE,
-                    max_tokens=MAX_TOKENS,
-                    stream=False,
-                )
-                raw_response: str = completion.choices[0].message.content or ""
-            except Exception as exc:
-                print(f"[DEBUG] LLM call failed: {exc}", flush=True)
-                raw_response = ""
+            # Build messages: system + recent history + current observation
+            history.append({"role": "user", "content": obs_text})
+
+            # Trim history to sliding window (keep last N user+assistant pairs)
+            if len(history) > HISTORY_WINDOW * 2:
+                history = history[-(HISTORY_WINDOW * 2):]
+
+            messages: List[Dict[str, str]] = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                *history,
+            ]
+
+            # Async-safe LLM call: run sync OpenAI client in thread pool
+            # to avoid blocking the event loop (prevents WebSocket keepalive timeout)
+            raw_response: str = await asyncio.to_thread(_call_llm, messages)
 
             action_dict: Dict[str, Any] = parse_llm_action(raw_response)
+
+            # Add assistant response to history
+            action_json: str = json.dumps(action_dict)
+            history.append({"role": "assistant", "content": action_json})
 
             action_type: str = action_dict.get("action_type", "wait")
             subtask_id: Optional[str] = action_dict.get("subtask_id")
@@ -313,7 +380,7 @@ async def run_task(task_id: str, env: OrchestratorClient) -> float:
 
 
 async def main() -> None:
-    """Run all 3 tasks sequentially and report scores."""
+    """Run all 4 tasks sequentially and report scores."""
     if IMAGE_NAME:
         env: OrchestratorClient = await OrchestratorClient.from_docker_image(IMAGE_NAME)
     else:

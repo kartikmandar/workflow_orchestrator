@@ -280,6 +280,23 @@ class AgentPool:
             for a in self._agents.values()
         ]
 
+    def get_effective_reliability(
+        self, agent_name: str, subtask_type: str, attempt_count: int
+    ) -> float:
+        """Get the effective reliability for an (agent, subtask_type, attempt) triple.
+
+        Public API for use by the environment to check for permanent failures
+        without duplicating reliability override logic.
+        """
+        agent = self._get(agent_name)
+        return _get_effective_reliability(
+            self._reliability_overrides,
+            agent_name,
+            subtask_type,
+            attempt_count,
+            agent.reliability,
+        )
+
     def _get(self, agent_name: str) -> _AgentState:
         if agent_name not in self._agents:
             raise KeyError(f"Unknown agent: '{agent_name}'")

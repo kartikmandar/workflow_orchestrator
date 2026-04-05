@@ -15,12 +15,17 @@ from .task_registry import TaskConfig
 class RewardCalculator:
     """Computes step rewards and end-of-episode bonuses for the orchestrator."""
 
+    # Maximum cumulative SLA penalty per milestone (prevents runaway penalties
+    # that dwarf all other reward signals and incentivize aborting over late completion)
+    SLA_MAX_PENALTY_PER_MILESTONE: float = 0.15
+
     def __init__(self, task_config: TaskConfig) -> None:
         self._config = task_config
         self._sla_milestones = task_config.sla_milestones or {}
         self._cost_budget = task_config.constraints.get("cost_budget")
         self._communication_subtasks = task_config.communication_subtasks
         self._steps_since_failure: dict[str, int] = {}
+        self._sla_penalty_accrued: dict[str, float] = {}  # track per-milestone cumulative penalty
 
     def calculate_step_reward(
         self,
@@ -185,13 +190,24 @@ class RewardCalculator:
         return -0.05  # generic invalid action penalty
 
     def _check_sla_penalties(self, dag: DAGExecutor, step: int) -> float:
-        """Check for SLA milestone violations and return penalty."""
+        """Check for SLA milestone violations and return penalty.
+
+        Applies -0.05 per step past deadline, capped at SLA_MAX_PENALTY_PER_MILESTONE
+        per milestone. This prevents runaway penalties that dwarf other signals.
+        """
         penalty = 0.0
         for subtask_id, deadline_step in self._sla_milestones.items():
             if step > deadline_step:
                 status = dag.get_subtask_status(subtask_id)
                 if status != "completed":
-                    penalty -= 0.05  # per step beyond deadline
+                    accrued = self._sla_penalty_accrued.get(subtask_id, 0.0)
+                    if accrued < self.SLA_MAX_PENALTY_PER_MILESTONE:
+                        step_penalty = min(
+                            0.05,
+                            self.SLA_MAX_PENALTY_PER_MILESTONE - accrued,
+                        )
+                        penalty -= step_penalty
+                        self._sla_penalty_accrued[subtask_id] = accrued + step_penalty
         return penalty
 
     def _check_unrecovered_failures(
