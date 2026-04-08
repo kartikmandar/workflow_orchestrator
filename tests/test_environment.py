@@ -479,9 +479,10 @@ class TestHardTaskEdgeCases:
             _wait(env)
         log = _episode_store["hard"]
         result = grade_hard(log)
-        # Even doing nothing scores 0.3: error_classification(0.1) +
-        # capacity_discipline(0.1) + cost_efficiency(0.1) from "no harm done"
-        assert result.score <= 0.35
+        # With activity gate, doing nothing scores 0.0: "no harm" dimensions
+        # (error_classification, capacity_discipline, cost_efficiency) are
+        # gated by min(1.0, completed/3) which is 0.0 when nothing is completed.
+        assert result.score <= 0.05
         assert result.breakdown["completion"] == 0.0
         assert result.breakdown["recovery"] == 0.0
         assert result.breakdown["sla_compliance"] == 0.0
@@ -500,3 +501,244 @@ class TestHardTaskEdgeCases:
         assert state.subtask_statuses["root_cause_analysis"] != "completed"
         # Total reward should be negative due to SLA + unnecessary_wait penalties
         assert env._total_reward < 0
+
+
+# ── Expert task walkthrough ──
+
+
+class TestExpertTaskWalkthrough:
+    """Full walkthrough of the expert task (Life OS Daily Orchestration).
+
+    The 18-step sequence was verified against the seeded RNG (seed=45) to
+    produce deterministic outcomes. It completes all 14 subtasks, achieves
+    full parallelism across all 3 fan-out points, meets all 3 SLA milestones,
+    avoids permanent failure traps, and routes around the personal_agent
+    dropout at step 10.
+
+    Grader score: 0.948 (8/10 dimensions at 100%).
+    """
+
+    def _run_known_good_sequence(self):
+        """Execute the known-good 18-step expert task walkthrough.
+
+        Returns (env, final_obs) so callers can make assertions.
+
+        Step-by-step plan:
+        - S0: morning_check_in -> personal_agent (speed=1, completes immediately)
+        - S1: assess_career_deadlines -> career_agent (speed=2, stays in_progress)
+        - S2: assess_sleep_energy -> health_agent (speed=1)
+              PARALLELISM: [assess_career_deadlines, assess_sleep_energy]
+              Both complete; career_agent finishes career_deadlines
+        - S3: assess_personal_commitments -> personal_agent (speed=1, completes)
+              All 3 assessments done -> plan_day_schedule ready
+        - S4: plan_day_schedule -> companion (speed=2, stays in_progress)
+        - S5: wait (companion completes plan_day_schedule at step 5; SLA met)
+        - S6: process_inbox -> executive_assistant (speed=2, stays in_progress)
+        - S7: start_focus_session -> focus_agent (speed=1)
+              PARALLELISM: [process_inbox, start_focus_session]
+              Both complete; career_agent degrades (speed 2->4) this step
+        - S8: deep_work_block -> companion (speed=2, stays in_progress)
+        - S9: handle_urgent_request -> executive_assistant (speed=2)
+              PARALLELISM: [deep_work_block, handle_urgent_request]
+              companion completes deep_work_block; exec_asst still working
+        - S10: midday_health_check -> health_agent (speed=1)
+               PARALLELISM: [handle_urgent_request, midday_health_check]
+               Both complete; personal_agent drops out (idle, no impact)
+               -> resolve_priority_conflict ready
+        - S11: resolve_priority_conflict -> companion (speed=2, stays in_progress)
+        - S12: wait (companion completes; SLA met at step 12 < 16)
+        - S13: afternoon_execution -> companion (speed=2, stays in_progress)
+        - S14: notify_stakeholders -> mail_agent (speed=1, FAILS: roll > reliability)
+               PARALLELISM: [afternoon_execution, notify_stakeholders]
+               companion completes afternoon_execution; mail_agent fails
+        - S15: retry notify_stakeholders -> mail_agent (attempt=1, succeeds)
+        - S16: synthesize_day_report -> mail_agent (speed=1, completes)
+               SLA met at step 16 < 23
+        - S17: synthesize (all 14 done, episode ends with bonus)
+        """
+        env, obs = _make_env("expert")
+
+        # Phase 1: Morning check-in
+        _delegate(env, "morning_check_in", "personal_agent")
+
+        # Phase 2: Three assessments with parallelism
+        _delegate(env, "assess_career_deadlines", "career_agent")
+        _delegate(env, "assess_sleep_energy", "health_agent")
+        _delegate(env, "assess_personal_commitments", "personal_agent")
+
+        # Phase 3: Plan day schedule (companion only viable first-attempt agent)
+        _delegate(env, "plan_day_schedule", "companion")
+        _wait(env)
+
+        # Phase 4: Focus + Inbox with parallelism
+        _delegate(env, "process_inbox", "executive_assistant")
+        _delegate(env, "start_focus_session", "focus_agent")
+
+        # Phase 5: Deep work + Urgent request with parallelism
+        _delegate(env, "deep_work_block", "companion")
+        _delegate(env, "handle_urgent_request", "executive_assistant")
+
+        # Phase 6: Midday health check (avoid wellness_monitor!)
+        _delegate(env, "midday_health_check", "health_agent")
+
+        # Phase 7: Conflict resolution (only companion viable)
+        _delegate(env, "resolve_priority_conflict", "companion")
+        _wait(env)
+
+        # Phase 8: Afternoon + Notify with parallelism
+        _delegate(env, "afternoon_execution", "companion")
+        _delegate(env, "notify_stakeholders", "mail_agent")  # fails attempt 0
+
+        # Phase 9: Retry notify, then final report
+        _retry(env, "notify_stakeholders", "mail_agent")  # attempt 1 succeeds
+        _delegate(env, "synthesize_day_report", "mail_agent")
+
+        # Phase 10: Synthesize
+        obs = _synthesize(env)
+
+        return env, obs
+
+    def test_all_14_subtasks_complete(self) -> None:
+        """All 14 subtasks should be completed after the walkthrough."""
+        env, obs = self._run_known_good_sequence()
+        assert obs.done is True
+        assert len(obs.completed_outputs) == 14
+        assert env._dag.is_all_completed()
+
+    def test_episode_terminates_with_positive_reward(self) -> None:
+        """Synthesize should trigger done and large positive total reward."""
+        env, obs = self._run_known_good_sequence()
+        assert obs.done is True
+        assert obs.reward > 0  # end bonus included
+        assert env._total_reward > 2.5  # verified: ~2.988
+
+    def test_time_and_budget(self) -> None:
+        """Verify time remaining and budget match expected values."""
+        env, obs = self._run_known_good_sequence()
+        assert obs.time_remaining == 7  # 25 - 18 steps
+        assert env._pool.get_budget_used() == pytest.approx(44.0, abs=0.1)
+
+    def test_failure_and_recovery(self) -> None:
+        """mail_agent fails notify_stakeholders attempt 0, recovers on retry."""
+        env, obs = self._run_known_good_sequence()
+        assert env._failures_occurred == 1
+        assert env._failures_recovered == 1
+
+    def test_parallelism_detected(self) -> None:
+        """Should detect parallelism across multiple fan-out points."""
+        env, obs = self._run_known_good_sequence()
+        # Morning assessments, focus+inbox, deep+urgent, urgent+health,
+        # afternoon+notify = 5+ parallelism events
+        assert env._parallelism_events >= 5
+
+    def test_personal_agent_offline_after_dropout(self) -> None:
+        """personal_agent should be offline after step 10 dropout event."""
+        env, obs = self._run_known_good_sequence()
+        assert env._pool.is_online("personal_agent") is False
+
+    def test_career_agent_degraded(self) -> None:
+        """career_agent speed should be 4 after degradation at step 7."""
+        env, obs = self._run_known_good_sequence()
+        agent_infos = env._pool.get_agent_infos()
+        career = [a for a in agent_infos if a.name == "career_agent"][0]
+        assert career.speed == 4
+
+    def test_zero_capacity_violations(self) -> None:
+        """No capacity violations in the known-good sequence."""
+        env, obs = self._run_known_good_sequence()
+        assert env._capacity_violations == 0
+
+    def test_grader_score_above_threshold(self) -> None:
+        """Grader should score >= 0.94 for the known-good walkthrough."""
+        from server.graders import grade_expert
+
+        env, obs = self._run_known_good_sequence()
+        log = _episode_store["expert"]
+        result = grade_expert(log)
+        assert result.score >= 0.94
+        assert result.score <= 1.0
+
+    def test_grader_all_dimensions_present(self) -> None:
+        """All 10 grader dimensions should be present and non-negative."""
+        from server.graders import grade_expert
+
+        env, obs = self._run_known_good_sequence()
+        log = _episode_store["expert"]
+        result = grade_expert(log)
+
+        expected_keys = [
+            "completion", "health_pillar", "career_pillar",
+            "conflict_resolution", "cost_efficiency", "parallelism",
+            "time_efficiency", "error_classification", "sla_compliance",
+            "communication",
+        ]
+        for key in expected_keys:
+            assert key in result.breakdown, f"Missing grader dimension: {key}"
+            assert result.breakdown[key] >= 0.0, f"{key} is negative"
+
+    def test_grader_perfect_dimensions(self) -> None:
+        """Verify the known-good walkthrough scores perfectly on 8 of 10 dimensions."""
+        from server.graders import grade_expert
+
+        env, obs = self._run_known_good_sequence()
+        log = _episode_store["expert"]
+        result = grade_expert(log)
+
+        # 100% dimensions
+        assert result.breakdown["completion"] == pytest.approx(0.15, abs=0.001)
+        assert result.breakdown["health_pillar"] == pytest.approx(0.12, abs=0.001)
+        assert result.breakdown["career_pillar"] == pytest.approx(0.10, abs=0.001)
+        assert result.breakdown["conflict_resolution"] == pytest.approx(0.20, abs=0.001)
+        assert result.breakdown["parallelism"] == pytest.approx(0.10, abs=0.001)
+        assert result.breakdown["error_classification"] == pytest.approx(0.08, abs=0.001)
+        assert result.breakdown["sla_compliance"] == pytest.approx(0.08, abs=0.001)
+        assert result.breakdown["communication"] == pytest.approx(0.04, abs=0.001)
+
+        # Partial dimensions (cost efficiency ~0.064, time efficiency ~0.014)
+        assert result.breakdown["cost_efficiency"] > 0.05
+        assert result.breakdown["time_efficiency"] > 0.01
+
+    def test_sla_milestones_all_met(self) -> None:
+        """All 3 SLA milestones should be met."""
+        from server.graders import count_sla_milestones_met
+
+        env, obs = self._run_known_good_sequence()
+        log = _episode_store["expert"]
+
+        sla_milestones = {
+            "plan_day_schedule": 8,
+            "resolve_priority_conflict": 16,
+            "synthesize_day_report": 23,
+        }
+        met = count_sla_milestones_met(log, sla_milestones)
+        assert met == 3
+
+    def test_permanent_failure_traps_avoided(self) -> None:
+        """Sequence never assigns wellness_monitor to health_alert or
+        executive_assistant to conflict_resolution."""
+        from server.graders import count_retries_on_permanent_failure
+
+        env, obs = self._run_known_good_sequence()
+        log = _episode_store["expert"]
+
+        assert count_retries_on_permanent_failure(log) == 0
+
+    def test_conflict_resolution_by_companion(self) -> None:
+        """resolve_priority_conflict should be completed by companion."""
+        from server.graders import subtask_completed_by_agent
+
+        env, obs = self._run_known_good_sequence()
+        log = _episode_store["expert"]
+
+        assert subtask_completed_by_agent(log, "resolve_priority_conflict", "companion")
+
+    def test_midday_health_not_by_wellness_monitor(self) -> None:
+        """midday_health_check should NOT be completed by wellness_monitor."""
+        from server.graders import subtask_not_completed_by_agent
+
+        env, obs = self._run_known_good_sequence()
+        log = _episode_store["expert"]
+
+        assert subtask_not_completed_by_agent(
+            log, "midday_health_check", ["wellness_monitor"]
+        )

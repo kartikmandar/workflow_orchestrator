@@ -14,6 +14,7 @@ from server.graders import (
     fan_out_parallelism_detected,
     grade,
     grade_easy,
+    grade_expert,
     grade_hard,
     grade_medium,
     monitoring_completed,
@@ -233,3 +234,105 @@ class TestGradeDispatcher:
         log = _make_log("unknown")
         with pytest.raises(KeyError):
             grade("unknown", log)
+
+
+# ── Degenerate policy tests ──
+# Prove that graders are well-calibrated: doing nothing scores near 0,
+# and known-good walkthroughs always outscore degenerate policies.
+
+
+class TestDegeneratePolicies:
+    """Verify that a do-nothing policy (all waits) scores near 0 on every task.
+
+    This validates the activity gate mechanism: dimensions that reward "no harm"
+    (error classification, capacity discipline, cost efficiency) scale with
+    actual task completion, preventing free points for inaction.
+    """
+
+    @staticmethod
+    def _run_do_nothing(task_id: str) -> GradeResult:
+        """Run a do-nothing policy (all waits) and return grader result."""
+        from server.environment import OrchestratorEnvironment, _episode_store
+        from models import OrchestratorAction
+
+        time_budgets = {"easy": 15, "medium": 16, "hard": 22, "expert": 25}
+        env = OrchestratorEnvironment()
+        env.reset(task_id=task_id)
+        for _ in range(time_budgets[task_id]):
+            env.step(OrchestratorAction(action_type="wait"))
+        return grade(task_id, _episode_store[task_id])
+
+    def test_do_nothing_easy_scores_zero(self) -> None:
+        result = self._run_do_nothing("easy")
+        assert result.score == 0.0
+
+    def test_do_nothing_medium_scores_near_zero(self) -> None:
+        result = self._run_do_nothing("medium")
+        assert result.score <= 0.05
+
+    def test_do_nothing_hard_scores_near_zero(self) -> None:
+        result = self._run_do_nothing("hard")
+        assert result.score <= 0.05
+
+    def test_do_nothing_expert_scores_near_zero(self) -> None:
+        result = self._run_do_nothing("expert")
+        assert result.score <= 0.05
+
+    def test_known_good_easy_outscores_degenerate(self) -> None:
+        """Known-good easy walkthrough must score higher than do-nothing."""
+        from server.environment import OrchestratorEnvironment, _episode_store
+        from models import OrchestratorAction
+
+        degenerate = self._run_do_nothing("easy")
+
+        # Run known-good easy walkthrough
+        env = OrchestratorEnvironment()
+        env.reset(task_id="easy")
+        seq = [
+            ("delegate", "technical_design", "tech_lead"),
+            ("delegate", "implement_backend", "backend_dev"),
+            ("delegate", "implement_frontend", "frontend_dev"),
+            ("delegate", "write_tests", "qa_engineer"),
+            ("delegate", "run_tests", "backend_dev"),
+            ("delegate", "review_and_merge", "tech_lead"),
+            ("synthesize", None, None),
+        ]
+        for action_type, sid, agent in seq:
+            env.step(OrchestratorAction(
+                action_type=action_type, subtask_id=sid, agent_name=agent,
+            ))
+        good = grade("easy", _episode_store["easy"])
+        assert good.score > degenerate.score + 0.5
+
+    def test_known_good_hard_outscores_degenerate(self) -> None:
+        """Known-good hard walkthrough must score higher than do-nothing."""
+        from server.environment import OrchestratorEnvironment, _episode_store
+        from models import OrchestratorAction
+
+        degenerate = self._run_do_nothing("hard")
+
+        # Run known-good hard walkthrough (14 steps)
+        env = OrchestratorEnvironment()
+        env.reset(task_id="hard")
+        steps = [
+            ("delegate", "alert_triage", "triage_analyst"),
+            ("delegate", "enrich_logs", "investigator_alpha"),
+            ("delegate", "check_dashboards", "monitor"),
+            ("retry", "enrich_logs", "investigator_beta"),
+            ("delegate", "check_dependencies", "investigator_alpha"),
+            ("delegate", "notify_stakeholders", "communicator"),
+            ("delegate", "root_cause_analysis", "senior_engineer"),
+            ("delegate", "deploy_hotfix", "deployer"),
+            ("delegate", "update_status_page", "communicator"),
+            ("delegate", "validate_fix", "senior_engineer"),
+            ("delegate", "monitor_recovery", "monitor"),
+            ("wait", None, None),
+            ("wait", None, None),
+            ("synthesize", None, None),
+        ]
+        for action_type, sid, agent in steps:
+            env.step(OrchestratorAction(
+                action_type=action_type, subtask_id=sid, agent_name=agent,
+            ))
+        good = grade("hard", _episode_store["hard"])
+        assert good.score > degenerate.score + 0.5

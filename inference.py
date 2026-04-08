@@ -45,7 +45,7 @@ MAX_TOKENS: int = 4096  # High ceiling for verbose models; concise models just u
 MAX_STEPS: int = 50
 SUCCESS_SCORE_THRESHOLD: float = 0.1
 TASK_TIMEOUT_S: int = 600  # 10 min per task; total 4 tasks fits in 20 min hackathon limit
-HISTORY_WINDOW: int = 4  # Last 4 turns — enough for context without bloating input tokens
+HISTORY_WINDOW: int = 6  # Last 6 turns — expert task needs longer context to avoid repeating mistakes
 
 VALID_ACTIONS: set[str] = {"delegate", "retry", "wait", "synthesize", "abort"}
 
@@ -63,15 +63,21 @@ ACTIONS (as JSON):
 {"action_type": "synthesize"}
 {"action_type": "abort", "subtask_id": "<id>"}
 
-RULES:
-1. delegate: Assign a READY subtask to an IDLE agent whose capabilities include the subtask type.
-2. retry: Re-assign a FAILED subtask. If error says "permanent failure" or "lacks required tooling", you MUST pick a DIFFERENT agent.
-3. wait: ONLY use when no READY subtasks exist OR all capable agents are busy.
-4. synthesize: ONLY when ALL subtasks are COMPLETED.
-5. NEVER wait when READY subtasks and idle capable agents exist — delegate instead.
-6. Maximize parallelism: delegate multiple ready subtasks across steps before waiting.
-7. Prefer cheaper agents (lower cost_per_step) when multiple can handle the same task type.
-8. After a fix is validated, wait 2 steps to monitor stability before synthesizing.
+DECISION PROCEDURE (follow this exact order):
+1. If ALL subtasks are COMPLETED → synthesize immediately (unless you need monitoring waits).
+2. If any subtask is FAILED → retry it NOW with a capable IDLE agent.
+   CRITICAL: If error says "permanent failure" or "lacks required tooling", the SAME agent will ALWAYS fail. You MUST pick a DIFFERENT agent with the same capability. Never retry the same agent on a permanent failure.
+3. If any subtask is READY and a capable IDLE agent exists → delegate it.
+   - When MULTIPLE subtasks are READY, delegate them ALL across consecutive steps before waiting.
+   - Prefer cheaper agents (lower cost_per_step) when multiple agents can do the same task.
+4. ONLY wait when no subtasks are READY or all capable agents are busy working.
+5. After validate_fix completes, wait 2 steps for monitoring before synthesizing.
+
+KEY PRINCIPLES:
+- MAXIMIZE PARALLELISM: If 3 subtasks are ready and 3 agents are idle, delegate all 3 in 3 consecutive steps.
+- NEVER wait when there is a READY subtask and an IDLE capable agent — this wastes a step.
+- Check the HINT line — it tells you what to do next.
+- Match subtask TYPE to agent CAPABILITIES (not just any agent).
 
 Respond with a single JSON object. Nothing else."""
 
@@ -259,19 +265,24 @@ def parse_llm_action(response_text: str) -> Dict[str, Any]:
 
 
 def _call_llm(messages: List[Dict[str, str]]) -> str:
-    """Synchronous LLM call — designed to be run via asyncio.to_thread()."""
-    try:
-        completion = llm.chat.completions.create(
-            model=MODEL_NAME,
-            messages=messages,
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            stream=False,
-        )
-        return completion.choices[0].message.content or ""
-    except Exception as exc:
-        print(f"[DEBUG] LLM call failed: {exc}", flush=True)
-        return ""
+    """Synchronous LLM call with retry — designed to be run via asyncio.to_thread()."""
+    import time
+
+    for attempt in range(2):
+        try:
+            completion = llm.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+                stream=False,
+            )
+            return completion.choices[0].message.content or ""
+        except Exception as exc:
+            print(f"[DEBUG] LLM call failed (attempt {attempt + 1}): {exc}", flush=True)
+            if attempt == 0:
+                time.sleep(2)
+    return ""
 
 
 # ── Task runner ──

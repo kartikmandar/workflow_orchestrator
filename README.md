@@ -17,7 +17,65 @@ An OpenEnv environment where an LLM agent acts as a **project coordinator**, man
 
 ## Motivation
 
-Agent orchestration is the #1 enterprise AI trend — yet LLMs are terrible at it. Research documents 14+ failure modes in multi-agent systems (MAST taxonomy), up to 17x error amplification in unstructured networks (Spark to Fire), and only 25% baseline correctness with GPT-4o (ChatDev). This environment provides a controlled, deterministic testbed for training and evaluating LLM orchestration capabilities across three real-world scenarios: software development, CI/CD deployment, and production incident response.
+Agent orchestration is the #1 enterprise AI trend — yet LLMs are terrible at it. Research documents 14+ failure modes in multi-agent systems (MAST taxonomy), up to 17x error amplification in unstructured networks (Spark to Fire), and only 25% baseline correctness with GPT-4o (ChatDev). This environment provides a controlled, deterministic testbed for training and evaluating LLM orchestration capabilities across four real-world scenarios forming a narrative arc: **build** a feature (Easy), **ship** it (Medium), **fix** the outage (Hard), and **orchestrate** your day (Expert).
+
+**Novel domain:** Zero orchestration environments exist in OpenEnv today. This fills the biggest gap in the ecosystem — coordination, delegation, parallelism, failure recovery, and cost management are untested by any existing environment.
+
+## Research Foundation
+
+This environment is grounded in 5 recent research papers:
+
+| Paper | Key Finding | How It Shaped Our Design |
+|-------|-------------|--------------------------|
+| **MAST Taxonomy** ([arxiv 2503.13657](https://arxiv.org/abs/2503.13657)) | 14 failure modes across 150+ multi-agent traces; GPT-4o achieves only 25% on ChatDev | Our tasks test 8 of 14 MAST failure modes (spec violation, role violation, step repetition, info withholding, premature termination, incomplete verification) |
+| **Spark to Fire** ([arxiv 2603.04474](https://arxiv.org/abs/2603.04474)) | 17.2x error amplification in unstructured agent networks; hub injection → 100% infection | Hard task DAG topology creates realistic cascade potential; failure recovery rewards incentivize early intervention |
+| **AgentErrorBench** ([arxiv 2509.25370](https://arxiv.org/abs/2509.25370)) | Targeted RL feedback improves error recovery by up to 26% across 5 failure categories | Dense per-step rewards target each error category; permanent vs. transient failure classification forces root-cause reasoning |
+| **MARBLE / MultiAgentBench** ([ACL 2025](https://aclanthology.org/2025.acl-long.421/)) | 3-agent teams optimize coordination-performance balance; excessive iterations degrade coordination | Capacity limit of 3 concurrent tasks; milestone-based grading; DAG-based task structure |
+| **DAAO** ([arxiv 2509.11079](https://arxiv.org/html/2509.11079v1)) | Task difficulty should dynamically determine orchestration strategy; 11% accuracy improvement | Our 4 tasks require fundamentally different strategies, not just more nodes |
+
+## Capabilities Tested (22 Total)
+
+Each difficulty level introduces **qualitatively different reasoning**, not just more nodes:
+
+| # | Capability | Easy | Med | Hard | Expert | What It Tests |
+|---|---|:---:|:---:|:---:|:---:|---|
+| 1 | Dependency comprehension | ✓ | ✓ | ✓ | ✓ | Read DAG, understand what blocks what |
+| 2 | Correct delegation | ✓ | ✓ | ✓ | ✓ | Match subtask type → agent capability |
+| 3 | Sequential ordering | ✓ | ✓ | ✓ | ✓ | Don't delegate before prerequisites complete |
+| 4 | Wait discipline | ✓ | ✓ | ✓ | ✓ | Wait when nothing is delegatable |
+| 5 | Output synthesis | ✓ | ✓ | ✓ | ✓ | Combine outputs into final deliverable |
+| 6 | Parallelism detection | | ✓ | ✓ | ✓ | Run independent subtasks concurrently |
+| 7 | Failure recovery | | ✓ | ✓ | ✓ | Retry after agent failure |
+| 8 | Capacity management | | ✓ | ✓ | ✓ | Stay within max concurrent task limit |
+| 9 | Time pressure planning | | ✓ | ✓ | ✓ | Must parallelize to meet deadline |
+| 10 | Cost awareness | | ✓ | ✓ | ✓ | Don't blindly retry expensive agents |
+| 11 | Agent selection under overlap | | | ✓ | ✓ | Multiple agents for same task — pick best |
+| 12 | Adaptation to agent dropout | | | ✓ | ✓ | Re-plan when agent goes offline |
+| 13 | Conflicting info aggregation | | | ✓ | ✓ | Two tracks produce different findings |
+| 14 | SLA milestone awareness | | | ✓ | ✓ | Hit deadlines or face escalating penalties |
+| 15 | Patience under pressure | | | ✓ | | Wait for monitoring — resist premature synthesis |
+| 16 | Priority reasoning | | | ✓ | ✓ | Side-channel tasks mustn't block critical path |
+| 17 | Error classification | | | ✓ | ✓ | Distinguish permanent vs. transient failure |
+| 18 | Multi-objective optimization | | | | ✓ | Balance competing pillar scores |
+| 19 | Cross-domain conflict resolution | | | | ✓ | Reconcile health vs career vs personal |
+| 20 | Agent cost-benefit analysis | | | ✓ | ✓ | When is the cheap agent actually more expensive? |
+| 21 | Cascading delay awareness | | | | ✓ | Speed degradation means earlier delegation = critical |
+| 22 | Multi-conflict episodes | | | | ✓ | Two distinct conflict resolution points |
+
+**Difficulty progression:** Easy = DAG comprehension (1-5). Medium = parallelism + recovery + budgets (6-10). Hard = chaos adaptation + error classification (11-17). Expert = multi-objective optimization across life domains (18-22).
+
+## Grader Design
+
+Each task has a multi-dimensional grader returning a score in [0.0, 1.0] with a detailed breakdown. Graders analyze the **episode event log** (process matters, not just outcome) and are fully **deterministic** — same actions = same score.
+
+| Task | Dimensions | Key Metrics |
+|------|-----------|-------------|
+| Easy | 4 | completion (85%), parallelism bonus (10%), episode complete (5%), invalid penalty |
+| Medium | 6 | completion (40%), parallelism (20%), failure recovery (20%), time efficiency (10%), cost efficiency (10%) |
+| Hard | 10 | completion (20%), recovery (15%), error classification (10%), capacity (10%), parallelism (10%), cost (10%), conflict resolution (10%), SLA compliance (10%), monitoring patience (5%) |
+| Expert | 10 | completion (15%), health pillar (12%), career pillar (10%), conflict resolution (20%), cost (8%), parallelism (10%), time (5%), error classification (8%), SLA (8%), communication (4%) |
+
+**Activity-gated scoring:** Dimensions that reward "no harm" (error classification, capacity discipline, cost efficiency) scale with actual activity via `min(1.0, completed / threshold)`. A do-nothing policy scores 0.0, not free points.
 
 ## Action Space
 
@@ -101,12 +159,16 @@ End-of-episode: +0.20 (all complete + synthesized), +0.10 * time_efficiency, +0.
 
 ## Baseline Scores
 
-| Task | Score | Model |
-|------|-------|-------|
-| Easy | 0.900 | Qwen/Qwen3-32B |
-| Medium | 0.633 | Qwen/Qwen3-32B |
-| Hard | 0.808 | Qwen/Qwen3-32B |
-| Expert | 0.802 | Qwen/Qwen3-32B |
+Scores from running the baseline inference script with Qwen3-32B via OpenRouter:
+
+| Task | Score | Subtasks | Key Challenge |
+|------|-------|----------|---------------|
+| Easy | 0.900 | 6/6 | DAG comprehension + optional parallelism |
+| Medium | 0.626 | 9/9 | 3-way fan-out + security scan failure recovery |
+| Hard | 0.724 | 10/10 | Permanent failure trap + agent dropout + SLA pressure |
+| Expert | 0.747 | 14/14 | Multi-objective optimization + 2 permanent failure traps |
+
+Scores reflect the LLM's orchestration ability: easy tasks are near-perfect, while medium/hard/expert require parallelism planning, failure recovery, and cost optimization that challenge even frontier models.
 
 ## Setup
 
@@ -169,7 +231,7 @@ workflow_orchestrator/
 │   ├── agent_pool.py         # Simulated agent state machines
 │   ├── reward_calculator.py  # Dense reward computation
 │   ├── graders.py            # Per-task grading functions
-│   ├── task_registry.py      # Easy/medium/hard task configurations
+│   ├── task_registry.py      # Easy/medium/hard/expert task configurations
 │   └── observation_formatter.py  # Text rendering for LLM consumption
-└── tests/                    # 137 passing tests
+└── tests/                    # 160+ passing tests
 ```

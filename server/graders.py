@@ -203,6 +203,10 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
     completed = count_completed_subtasks(log)
     completion = (completed / 9) * 0.40
 
+    # Activity gate: cost efficiency should scale with actual activity.
+    # Reaching 3+ completions (33% of subtasks) earns full credit.
+    activity = min(1.0, completed / 3)
+
     parallelism = 0.20 if fan_out_parallelism_detected(
         log, ["run_linter", "run_unit_tests", "run_security_scan"]
     ) else 0.0
@@ -217,7 +221,7 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
     budget_total = get_total_budget(log)
     cost_eff = 0.0
     if budget_total and budget_total > 0:
-        cost_eff = 0.10 * max(0.0, 1.0 - budget_used / budget_total)
+        cost_eff = 0.10 * max(0.0, 1.0 - budget_used / budget_total) * activity
 
     invalid_count = count_invalid_actions(log)
     penalty = min(0.10, invalid_count * 0.03)
@@ -247,6 +251,12 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
     completed = count_completed_subtasks(log)
     completion = (completed / 10) * 0.20
 
+    # Activity gate: dimensions that reward "no harm" (error classification,
+    # capacity discipline, cost efficiency) should scale with actual activity.
+    # A do-nothing policy (0 completions) gets 0 on these dimensions.
+    # Reaching 3+ completions (30% of subtasks) earns full credit.
+    activity = min(1.0, completed / 3)
+
     # Recovery: 0.15 split across two designed failure scenarios
     # - enrich_logs: investigator_alpha permanently fails (must use different agent)
     # - deploy_hotfix: deployer goes offline at step 12 (must use senior_engineer)
@@ -258,9 +268,9 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
     recovery = 0.15 * (recovery_count / 2) if recovery_count > 0 else 0.0
 
     perm_retries = count_retries_on_permanent_failure(log)
-    error_class = 0.10 * max(0.0, 1.0 - 0.5 * perm_retries)
+    error_class = 0.10 * max(0.0, 1.0 - 0.5 * perm_retries) * activity
 
-    capacity = 0.10 if zero_capacity_violations(log) else 0.0
+    capacity = (0.10 if zero_capacity_violations(log) else 0.0) * activity
 
     parallelism = 0.10 * compute_parallel_efficiency(log)
 
@@ -268,7 +278,7 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
     budget_total = get_total_budget(log)
     cost_eff = 0.0
     if budget_total and budget_total > 0:
-        cost_eff = 0.10 * max(0.0, 1.0 - budget_used / budget_total)
+        cost_eff = 0.10 * max(0.0, 1.0 - budget_used / budget_total) * activity
 
     conflict = 0.10 if both_findings_aggregated(log) else 0.0
 
@@ -382,6 +392,10 @@ def grade_expert(log: EpisodeLog) -> GradeResult:
     completed = count_completed_subtasks(log)
     breakdown["completion"] = (completed / 14) * 0.15
 
+    # Activity gate: "no harm" dimensions scale with actual activity.
+    # Reaching 4+ completions (29% of subtasks) earns full credit.
+    activity = min(1.0, completed / 4)
+
     # 2. Health pillar: 12%
     health_score = 0.0
     if subtask_completed_check(log, "assess_sleep_energy"):
@@ -412,13 +426,13 @@ def grade_expert(log: EpisodeLog) -> GradeResult:
         conflict_score += 0.3
     breakdown["conflict_resolution"] = conflict_score * 0.20
 
-    # 5. Cost efficiency: 8%
+    # 5. Cost efficiency: 8% (gated by activity)
     budget_used = get_total_budget_used(log)
     cost_ratio = budget_used / 55.0 if 55.0 > 0 else 0
     if cost_ratio <= 0.75:
-        breakdown["cost_efficiency"] = 0.08
+        breakdown["cost_efficiency"] = 0.08 * activity
     elif cost_ratio <= 1.0:
-        breakdown["cost_efficiency"] = (1.0 - cost_ratio) / 0.25 * 0.08
+        breakdown["cost_efficiency"] = (1.0 - cost_ratio) / 0.25 * 0.08 * activity
     else:
         breakdown["cost_efficiency"] = 0.0
 
@@ -441,9 +455,9 @@ def grade_expert(log: EpisodeLog) -> GradeResult:
     else:
         breakdown["time_efficiency"] = 0.0
 
-    # 8. Error classification: 8%
+    # 8. Error classification: 8% (gated by activity)
     perm_retries = count_retries_on_permanent_failure(log)
-    breakdown["error_classification"] = max(0.0, 1.0 - 0.5 * perm_retries) * 0.08
+    breakdown["error_classification"] = max(0.0, 1.0 - 0.5 * perm_retries) * 0.08 * activity
 
     # 9. SLA compliance: 8%
     sla_milestones = {"plan_day_schedule": 8, "resolve_priority_conflict": 16, "synthesize_day_report": 23}

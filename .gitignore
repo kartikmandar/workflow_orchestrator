@@ -40,3 +40,6 @@ htmlcov/
 # Distribution
 *.whl
 *.tar.gz
+
+# Debug scripts
+debug_*.py
