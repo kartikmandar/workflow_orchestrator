@@ -1,7 +1,7 @@
 """Graders for evaluating orchestrator performance from episode logs.
 
 Three graders (easy/medium/hard), each analyzing the EpisodeLog to produce
-a GradeResult with score in [0.0, 1.0] and a breakdown dict.
+a GradeResult with score in (0, 1) — strictly between 0 and 1 — and a breakdown dict.
 """
 
 from typing import Optional
@@ -513,8 +513,15 @@ _GRADERS = {
 }
 
 
+# Epsilon for strict open-interval (0, 1) compliance.
+# Applied after per-grader rounding so that 0.0000 -> 0.0001 and 1.0000 -> 0.9999.
+_SCORE_EPS = 0.0001
+
+
 def grade(task_id: str, log: EpisodeLog) -> GradeResult:
     """Grade an episode log using the appropriate task-specific grader."""
     if task_id not in _GRADERS:
         raise KeyError(f"No grader for task_id '{task_id}'. Available: {list(_GRADERS.keys())}")
-    return _GRADERS[task_id](log)
+    result = _GRADERS[task_id](log)
+    result.score = max(_SCORE_EPS, min(1.0 - _SCORE_EPS, result.score))
+    return result

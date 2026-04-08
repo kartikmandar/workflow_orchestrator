@@ -175,7 +175,7 @@ class TestEasyGrader:
         log = _make_log("easy")
         log.total_steps = 15
         result = grade_easy(log)
-        assert result.score == 0.0
+        assert result.score == 0.0  # Direct grade_easy() call; clamping is in grade() dispatcher
 
     def test_partial_with_invalids(self) -> None:
         log = _make_log("easy")
@@ -264,7 +264,7 @@ class TestDegeneratePolicies:
 
     def test_do_nothing_easy_scores_zero(self) -> None:
         result = self._run_do_nothing("easy")
-        assert result.score == 0.0
+        assert result.score == 0.0001
 
     def test_do_nothing_medium_scores_near_zero(self) -> None:
         result = self._run_do_nothing("medium")
