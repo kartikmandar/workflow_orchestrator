@@ -355,7 +355,7 @@ async def run_task(task_id: str, env: OrchestratorClient) -> float:
 
             result = await env.step(action)
 
-            reward: float = result.reward or 0.0
+            reward: float = max(0.01, min(0.99, result.reward or 0.0))
             done: bool = result.done
             error: Optional[str] = None
             if result.observation.errors:
