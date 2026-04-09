@@ -377,7 +377,7 @@ async def run_task(task_id: str, env: OrchestratorClient) -> float:
             score = grade_data.get("score", 0.0)
         except Exception as exc:
             print(f"[DEBUG] Grader call failed: {exc}", flush=True)
-            score = 0.0
+            score = 0.01
 
         success = score >= SUCCESS_SCORE_THRESHOLD
 
@@ -408,8 +408,8 @@ async def main() -> None:
                 )
             except asyncio.TimeoutError:
                 print(f"[DEBUG] Task {task_id} timed out after {TASK_TIMEOUT_S}s", flush=True)
-                scores[task_id] = 0.0
-                log_end(success=False, steps=0, score=0.0, rewards=[])
+                scores[task_id] = 0.01
+                log_end(success=False, steps=0, score=0.01, rewards=[])
     finally:
         try:
             await env.close()

@@ -264,7 +264,7 @@ class TestDegeneratePolicies:
 
     def test_do_nothing_easy_scores_zero(self) -> None:
         result = self._run_do_nothing("easy")
-        assert result.score == 0.0001
+        assert result.score == 0.01
 
     def test_do_nothing_medium_scores_near_zero(self) -> None:
         result = self._run_do_nothing("medium")

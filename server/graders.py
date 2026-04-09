@@ -514,8 +514,8 @@ _GRADERS = {
 
 
 # Epsilon for strict open-interval (0, 1) compliance.
-# Applied after per-grader rounding so that 0.0000 -> 0.0001 and 1.0000 -> 0.9999.
-_SCORE_EPS = 0.0001
+# Applied after per-grader rounding so that 0.0000 -> 0.01 and 1.0000 -> 0.99.
+_SCORE_EPS = 0.01
 
 
 def grade(task_id: str, log: EpisodeLog) -> GradeResult:
