@@ -471,10 +471,10 @@ class OrchestratorEnvironment(
         cost_budget = self._config.constraints.get("cost_budget")
         budget_used = self._pool.get_budget_used()
 
-        # Clamp reward to [0, 1] for OpenEnv evaluation compliance.
+        # Clamp reward to (0, 1) exclusive for strict OpenEnv evaluation compliance.
         # Internal _total_reward still uses unclamped values for accurate tracking;
         # graders use episode logs, not observation rewards, so they're unaffected.
-        clamped_reward = max(0.0, min(1.0, reward))
+        clamped_reward = max(0.01, min(0.99, reward))
 
         return OrchestratorObservation(
             task_description=self._config.description,

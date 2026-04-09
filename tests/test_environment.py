@@ -49,7 +49,7 @@ class TestReset:
         env, obs = _make_env("easy")
         assert isinstance(obs, OrchestratorObservation)
         assert obs.done is False
-        assert obs.reward == 0.0
+        assert obs.reward == 0.01  # clamped to (0, 1) exclusive for eval compliance
         assert obs.time_remaining == 15
         assert obs.time_elapsed == 0
 
@@ -88,7 +88,7 @@ class TestValidation:
         obs = _delegate(env, "technical_design", "frontend_dev")
         assert len(obs.errors) > 0
         assert "lacks capability" in obs.errors[0]
-        assert obs.reward == 0.0  # negative reward clamped to 0 for eval compliance
+        assert obs.reward == 0.01  # negative reward clamped to (0, 1) exclusive for eval compliance
 
     def test_delegate_pending_subtask(self) -> None:
         env, _ = _make_env("easy")
@@ -443,7 +443,7 @@ class TestHardTaskEdgeCases:
         obs = _retry(env, "enrich_logs", "investigator_alpha")
         assert len(obs.errors) == 1
         assert "permanent" in obs.errors[0].lower()
-        assert obs.reward == 0.0  # negative penalty clamped to 0 for eval compliance
+        assert obs.reward == 0.01  # negative penalty clamped to (0, 1) exclusive for eval compliance
 
     def test_monitoring_patience_failure(self) -> None:
         """Synthesizing immediately after all complete loses patience score."""

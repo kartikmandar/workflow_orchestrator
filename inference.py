@@ -298,7 +298,7 @@ async def run_task(task_id: str, env: OrchestratorClient) -> float:
 
     rewards: List[float] = []
     steps_taken: int = 0
-    score: float = 0.0
+    score: float = 0.01
     success: bool = False
 
     # Conversation history: sliding window of recent turns
@@ -373,8 +373,9 @@ async def run_task(task_id: str, env: OrchestratorClient) -> float:
         try:
             async with httpx.AsyncClient(base_url=ENV_URL, timeout=60.0) as http:
                 grade_resp = await http.post("/grader", json={"task_id": task_id})
+                grade_resp.raise_for_status()
                 grade_data: Dict[str, Any] = grade_resp.json()
-            score = grade_data.get("score", 0.0)
+            score = grade_data.get("score", 0.01)
         except Exception as exc:
             print(f"[DEBUG] Grader call failed: {exc}", flush=True)
             score = 0.01
@@ -382,6 +383,8 @@ async def run_task(task_id: str, env: OrchestratorClient) -> float:
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     finally:
+        # Safety clamp: ensure score is strictly in (0, 1) for Phase 2 validation
+        score = max(0.01, min(0.99, score))
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
     return score
@@ -409,7 +412,7 @@ async def main() -> None:
             except asyncio.TimeoutError:
                 print(f"[DEBUG] Task {task_id} timed out after {TASK_TIMEOUT_S}s", flush=True)
                 scores[task_id] = 0.01
-                log_end(success=False, steps=0, score=0.01, rewards=[])
+                # Don't call log_end here — run_task's finally block already emits [END]
     finally:
         try:
             await env.close()
