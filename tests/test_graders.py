@@ -29,9 +29,11 @@ def _make_log(task_id: str = "easy") -> EpisodeLog:
     return EpisodeLog(task_id=task_id)
 
 
-def _add_completed(log: EpisodeLog, subtask_id: str, step: int, attempt: int = 0) -> None:
+def _add_completed(
+    log: EpisodeLog, subtask_id: str, step: int, attempt: int = 0, agent_name: str = "agent",
+) -> None:
     log.append(step, "subtask_completed", {
-        "subtask_id": subtask_id, "agent_name": "agent", "attempt_count": attempt,
+        "subtask_id": subtask_id, "agent_name": agent_name, "attempt_count": attempt,
     })
 
 
@@ -106,17 +108,25 @@ class TestHelperFunctions:
         _add_invalid(log, 2, error="generic error", action_type="retry")
         assert count_retries_on_permanent_failure(log) == 1
 
-    def test_both_findings_aggregated(self) -> None:
+    def test_both_findings_aggregated_different_agents(self) -> None:
         log = _make_log("hard")
-        _add_completed(log, "enrich_logs", 3)
-        _add_completed(log, "check_dashboards", 4)
-        _add_completed(log, "root_cause_analysis", 6)
+        _add_completed(log, "enrich_logs", 3, agent_name="investigator_beta")
+        _add_completed(log, "check_dashboards", 4, agent_name="monitor")
+        _add_completed(log, "root_cause_analysis", 6, agent_name="senior_engineer")
         assert both_findings_aggregated(log)
+
+    def test_both_findings_not_aggregated_same_agent(self) -> None:
+        """Same agent for both findings = no diversity = not aggregated."""
+        log = _make_log("hard")
+        _add_completed(log, "enrich_logs", 3, agent_name="investigator_beta")
+        _add_completed(log, "check_dashboards", 4, agent_name="investigator_beta")
+        _add_completed(log, "root_cause_analysis", 6, agent_name="senior_engineer")
+        assert not both_findings_aggregated(log)
 
     def test_both_findings_not_aggregated_missing_one(self) -> None:
         log = _make_log("hard")
-        _add_completed(log, "enrich_logs", 3)
-        _add_completed(log, "root_cause_analysis", 6)
+        _add_completed(log, "enrich_logs", 3, agent_name="investigator_beta")
+        _add_completed(log, "root_cause_analysis", 6, agent_name="senior_engineer")
         assert not both_findings_aggregated(log)
 
     def test_monitoring_completed_true(self) -> None:

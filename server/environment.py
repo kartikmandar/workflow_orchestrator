@@ -490,6 +490,9 @@ class OrchestratorEnvironment(
             budget_used=budget_used,
             available_actions=self._compute_available_actions(),
             hint=self._compute_hint(),
+            sla_milestones=self._config.sla_milestones,
+            failures_occurred=self._failures_occurred,
+            failures_recovered=self._failures_recovered,
             done=self._done,
             reward=clamped_reward,
         )

@@ -131,6 +131,20 @@ def format_observation(obs: OrchestratorObservation) -> str:
         f"Active: {obs.active_task_count}/{obs.capacity_limit}{budget_str}"
     )
 
+    # SLA milestones (critical deadlines for hard/expert tasks)
+    if obs.sla_milestones:
+        milestones_str: str = ", ".join(
+            f"{k} by step {v}" for k, v in obs.sla_milestones.items()
+        )
+        lines.append(f"SLA Deadlines: {milestones_str}")
+
+    # Failure tracking
+    if obs.failures_occurred > 0:
+        lines.append(
+            f"Failures: {obs.failures_occurred} occurred, "
+            f"{obs.failures_recovered} recovered"
+        )
+
     # Hint at top for visibility (verbose models may not read to the end)
     if obs.hint:
         lines.append(f">>> HINT: {obs.hint}")

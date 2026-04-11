@@ -91,6 +91,9 @@ class OrchestratorObservation(BaseObservation):
     budget_used: float = 0.0
     available_actions: list[str]
     hint: Optional[str] = None
+    sla_milestones: Optional[Dict[str, int]] = None
+    failures_occurred: int = 0
+    failures_recovered: int = 0
 
 
 class OrchestratorState(BaseState):
