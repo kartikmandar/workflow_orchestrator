@@ -28,6 +28,8 @@ Usage:
     python -m server.app
 """
 
+import inspect
+
 try:
     from openenv.core.env_server.http_server import create_app
 except Exception as e:  # pragma: no cover
@@ -38,17 +40,30 @@ except Exception as e:  # pragma: no cover
 try:
     from ..models import OrchestratorAction, OrchestratorObservation
     from .environment import OrchestratorEnvironment
+    from .gradio_ui import build_orchestrator_gradio_app
 except ImportError:
     from models import OrchestratorAction, OrchestratorObservation
     from server.environment import OrchestratorEnvironment
+    from server.gradio_ui import build_orchestrator_gradio_app
 
 
-app = create_app(
-    OrchestratorEnvironment,
-    OrchestratorAction,
-    OrchestratorObservation,
-    env_name="workflow_orchestrator",
-)
+# Use custom Mission Control dashboard if openenv-core supports gradio_builder
+_sig = inspect.signature(create_app)
+if "gradio_builder" in _sig.parameters:
+    app = create_app(
+        OrchestratorEnvironment,
+        OrchestratorAction,
+        OrchestratorObservation,
+        env_name="workflow_orchestrator",
+        gradio_builder=build_orchestrator_gradio_app,
+    )
+else:
+    app = create_app(
+        OrchestratorEnvironment,
+        OrchestratorAction,
+        OrchestratorObservation,
+        env_name="workflow_orchestrator",
+    )
 
 
 # ── Custom endpoints (required by hackathon) ──
