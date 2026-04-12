@@ -189,7 +189,7 @@ Single run, Qwen3-32B through OpenRouter, temperature=0, max_tokens=4096:
 | **Qwen3-32B** | **0.90** | **0.63** | **0.73** | **0.74** |
 | Best known (hand-written) | 0.90 | 0.63 | 0.78 | 0.95 |
 
-The hard task is where scores vary most. The greedy heuristic scores 0.07 because it keeps retrying the permanently failing agent. The expert task has the biggest gap to the best known score (0.21) because balancing multiple goals is hard for current LLMs. The greedy heuristic actually beats the LLM on expert (0.87 vs 0.74) because fast delegation works better than careful planning when subtasks are simple, but it can't handle the conflict resolution points.
+The hard task is where scores vary most. The greedy heuristic scores 0.07 because it keeps retrying the permanently failing agent. The expert task has the biggest gap to the best known score (0.21) because balancing multiple goals is hard for current LLMs. The greedy heuristic scores higher than the LLM on expert (0.87 vs 0.74) because it delegates quickly and racks up completion points, but it scores 0.0 on conflict resolution and pillar balancing, which is where the best known policy (0.95) pulls ahead.
 
 ## API
 
