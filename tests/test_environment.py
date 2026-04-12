@@ -486,8 +486,8 @@ class TestHardTaskEdgeCases:
         assert result.breakdown["completion"] == 0.0
         assert result.breakdown["recovery"] == 0.0
         assert result.breakdown["sla_compliance"] == 0.0
-        # 18 keys: 9 dimensions + invalid_penalty + 8 diagnostic metadata
-        assert len(result.breakdown) == 18
+        # 19 keys: 9 dimensions + invalid_penalty + budget_overrun_penalty + 8 diagnostic metadata
+        assert len(result.breakdown) == 19
 
     def test_sla_penalty_when_delayed(self) -> None:
         """Delaying root_cause past step 10 should incur SLA penalties."""

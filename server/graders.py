@@ -241,7 +241,13 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
     invalid_count = count_invalid_actions(log)
     penalty = min(0.10, invalid_count * 0.03)
 
-    score = max(0.0, min(1.0, completion + parallelism + recovery + time_eff + cost_eff - penalty))
+    # Budget overrun penalty
+    overrun_penalty = 0.0
+    if budget_total and budget_total > 0 and budget_used > budget_total:
+        overrun_ratio = (budget_used - budget_total) / budget_total
+        overrun_penalty = min(0.10, overrun_ratio * 0.20)
+
+    score = max(0.0, min(1.0, completion + parallelism + recovery + time_eff + cost_eff - penalty - overrun_penalty))
 
     result = GradeResult(
         score=round(score, 4),
@@ -252,6 +258,7 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
             "time_efficiency": round(time_eff, 4),
             "cost_efficiency": round(cost_eff, 4),
             "invalid_penalty": round(-penalty, 4),
+            "budget_overrun_penalty": round(-overrun_penalty, 4),
         },
     )
 
@@ -312,9 +319,15 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
     invalid_count = count_invalid_actions(log)
     invalid_penalty = min(0.10, invalid_count * 0.03)
 
+    # Budget overrun penalty
+    overrun_penalty = 0.0
+    if budget_total and budget_total > 0 and budget_used > budget_total:
+        overrun_ratio = (budget_used - budget_total) / budget_total
+        overrun_penalty = min(0.10, overrun_ratio * 0.20)
+
     score = max(0.0, min(1.0,
         completion + recovery + error_class + capacity + parallelism
-        + cost_eff + conflict + sla + patience - invalid_penalty
+        + cost_eff + conflict + sla + patience - invalid_penalty - overrun_penalty
     ))
 
     result = GradeResult(
@@ -330,6 +343,7 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
             "sla_compliance": round(sla, 4),
             "monitoring_patience": round(patience, 4),
             "invalid_penalty": round(-invalid_penalty, 4),
+            "budget_overrun_penalty": round(-overrun_penalty, 4),
         },
     )
 
@@ -505,7 +519,19 @@ def grade_expert(log: EpisodeLog) -> GradeResult:
     # Penalty for invalid actions (max -0.15)
     invalid_count = count_invalid_actions(log)
     score -= min(0.15, 0.03 * invalid_count)
+
+    # Budget overrun penalty
+    budget_used = get_total_budget_used(log)
+    budget_total = get_total_budget(log)
+    overrun_penalty = 0.0
+    if budget_total and budget_total > 0 and budget_used > budget_total:
+        overrun_ratio = (budget_used - budget_total) / budget_total
+        overrun_penalty = min(0.10, overrun_ratio * 0.20)
+    score -= overrun_penalty
+
     score = max(0.0, min(1.0, score))
+
+    breakdown["budget_overrun_penalty"] = round(-overrun_penalty, 4)
 
     result = GradeResult(
         score=round(score, 4),
@@ -523,24 +549,28 @@ def grade_expert(log: EpisodeLog) -> GradeResult:
 
 
 def both_findings_aggregated_expert(log: EpisodeLog) -> bool:
-    """Check if both conflict resolution inputs completed before their consumer.
+    """Check if conflict resolution inputs were completed by different agents.
 
-    For plan_day_schedule: all 3 assessments must complete before it.
-    For resolve_priority_conflict: both midday_health_check and handle_urgent_request must complete before it.
-    Returns True if at least one conflict point has both inputs resolved.
+    For resolve_priority_conflict: midday_health_check and handle_urgent_request
+    must both complete before it, AND must be done by different agents.
+    Using the same agent for both means the policy didn't diversify its
+    information sources across health and career domains.
     """
-    # Check resolve_priority_conflict: needs midday_health_check + handle_urgent_request
-    health_done = False
-    urgent_done = False
+    health_agent: str | None = None
+    urgent_agent: str | None = None
     for event in log.events:
         if event.event_type == "subtask_completed":
             sid = event.data.get("subtask_id", "")
             if sid == "midday_health_check":
-                health_done = True
+                health_agent = event.data.get("agent_name")
             elif sid == "handle_urgent_request":
-                urgent_done = True
+                urgent_agent = event.data.get("agent_name")
             elif sid == "resolve_priority_conflict":
-                return health_done and urgent_done
+                return (
+                    health_agent is not None
+                    and urgent_agent is not None
+                    and health_agent != urgent_agent
+                )
     return False
 
 

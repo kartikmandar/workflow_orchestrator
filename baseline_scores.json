@@ -1,14 +1,14 @@
 {
   "easy": 0.9,
-  "medium": 0.6263,
+  "medium": 0.62,
   "hard": 0.7239,
-  "expert": 0.7467,
+  "expert": 0.6996,
   "_metadata": {
-    "model": "Qwen/Qwen3-32B",
+    "model": "qwen/qwen3-32b",
     "provider": "OpenRouter",
     "temperature": 0.0,
     "max_tokens": 4096,
-    "timestamp": "2026-04-08T22:33:00Z"
+    "timestamp": "2026-04-12T18:00:00Z"
   },
   "_oracle": {
     "easy": 0.90,
@@ -20,6 +20,6 @@
     "easy": 0.90,
     "medium": 0.63,
     "hard": 0.07,
-    "expert": 0.87
+    "expert": 0.78
   }
 }
