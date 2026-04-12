@@ -82,6 +82,8 @@ class TestOrchestratorObservation:
         assert obs.done is False
         assert obs.reward is None
         assert obs.budget_remaining is None
+        assert obs.critical_path_length is None
+        assert obs.reward_breakdown is None
 
     def test_inherits_done_and_reward(self) -> None:
         obs = OrchestratorObservation(

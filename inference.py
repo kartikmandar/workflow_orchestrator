@@ -149,6 +149,8 @@ def format_observation(obs: OrchestratorObservation) -> str:
         f"Step: {obs.time_elapsed}/{time_total} | "
         f"Active: {obs.active_task_count}/{obs.capacity_limit}{budget_str}"
     )
+    if obs.critical_path_length is not None:
+        lines.append(f"Critical Path: {obs.critical_path_length} steps minimum")
 
     # SLA milestones (critical deadlines for hard/expert tasks)
     if obs.sla_milestones:
@@ -217,6 +219,19 @@ def format_observation(obs: OrchestratorObservation) -> str:
         for e in obs.errors:
             lines.append(f"  ! {e}")
         lines.append("")
+
+    if obs.reward_breakdown:
+        nonzero = {
+            key: value
+            for key, value in obs.reward_breakdown.items()
+            if value != 0
+        }
+        if nonzero:
+            lines.append("-- REWARD BREAKDOWN --")
+            for key, value in nonzero.items():
+                sign = "+" if value >= 0 else ""
+                lines.append(f"  {key}: {sign}{value:.3f}")
+            lines.append("")
 
     # Available actions
     lines.append(f"Available actions: {', '.join(obs.available_actions)}")

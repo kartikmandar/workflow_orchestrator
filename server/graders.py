@@ -168,16 +168,47 @@ def get_total_budget(log: EpisodeLog) -> Optional[float]:
     return log.budget_total
 
 
+def compute_recovery_speed(log: EpisodeLog) -> float:
+    """Score how quickly failures are retried.
+
+    Fastest possible recovery is a retry on the immediately following step,
+    which scores 1.0. A 4-step gap or worse scores 0.0.
+    """
+    failure_steps: dict[str, int] = {}
+    recovery_gaps: list[int] = []
+
+    for event in log.events:
+        if event.event_type == "subtask_failed":
+            sid = event.data.get("subtask_id", "")
+            failure_steps.setdefault(sid, event.step)
+        elif (
+            event.event_type == "action_taken"
+            and event.data.get("action_type") == "retry"
+        ):
+            sid = event.data.get("subtask_id", "")
+            if sid in failure_steps:
+                recovery_gaps.append(max(0, event.step - failure_steps.pop(sid)))
+
+    if not failure_steps and not recovery_gaps:
+        return 1.0
+    if not recovery_gaps:
+        return 0.0
+
+    avg_gap = sum(recovery_gaps) / len(recovery_gaps)
+    return max(0.0, 1.0 - max(0.0, avg_gap - 1.0) / 3.0)
+
+
 # ── Graders ──
 
 
 def grade_easy(log: EpisodeLog) -> GradeResult:
     """Grade an easy task episode (Feature Development Sprint).
 
-    Weights: completion(0.85), parallelism(0.10), base(0.05), -invalid_penalty.
+    Weights: completion(0.75), parallelism(0.10), base(0.05),
+    step_efficiency(0.10), -invalid_penalty.
     """
     completed = count_completed_subtasks(log)
-    completion = (completed / 6) * 0.85
+    completion = (completed / 6) * 0.75
 
     parallelism = 0.10 if fan_out_parallelism_detected(
         log, ["implement_frontend", "write_tests"]
@@ -188,12 +219,23 @@ def grade_easy(log: EpisodeLog) -> GradeResult:
     invalid_count = count_invalid_actions(log)
     penalty = min(0.20, invalid_count * 0.05)
 
-    score = max(0.0, min(1.0, completion + parallelism + base - penalty))
-
     # Informational metrics (don't affect score, but show grader depth to judges)
     theoretical_min_steps = 7  # 6 subtasks + synthesize; parallelism saves ~1 step
     steps_used = log.total_steps if log.total_steps > 0 else 0
-    efficiency_ratio = round(theoretical_min_steps / max(1, steps_used), 4) if steps_used > 0 else 0.0
+    efficiency_ratio = (
+        round(theoretical_min_steps / max(1, steps_used), 4)
+        if steps_used > 0 else 0.0
+    )
+    step_efficiency = (
+        0.10 * min(1.0, theoretical_min_steps / max(1, steps_used))
+        if steps_used > 0 and episode_completed(log)
+        else 0.0
+    )
+
+    score = max(
+        0.0,
+        min(1.0, completion + parallelism + base + step_efficiency - penalty),
+    )
 
     return GradeResult(
         score=round(score, 4),
@@ -201,6 +243,7 @@ def grade_easy(log: EpisodeLog) -> GradeResult:
             "completion": round(completion, 4),
             "parallelism": round(parallelism, 4),
             "base": round(base, 4),
+            "step_efficiency": round(step_efficiency, 4),
             "invalid_penalty": round(-penalty, 4),
             "steps_used": steps_used,
             "theoretical_min_steps": theoretical_min_steps,
@@ -212,11 +255,11 @@ def grade_easy(log: EpisodeLog) -> GradeResult:
 def grade_medium(log: EpisodeLog) -> GradeResult:
     """Grade a medium task episode (Microservice Deployment Pipeline).
 
-    Weights: completion(0.40), parallelism(0.20), recovery(0.20),
-    time_eff(0.10), cost_eff(0.10).
+    Weights: completion(0.35), parallelism(0.20), recovery(0.20),
+    time_eff(0.10), cost_eff(0.10), capacity(0.05).
     """
     completed = count_completed_subtasks(log)
-    completion = (completed / 9) * 0.40
+    completion = (completed / 9) * 0.35
 
     # Activity gate: cost efficiency should scale with actual activity.
     # Reaching 5+ completions (56% of subtasks) earns full credit.
@@ -238,6 +281,8 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
     if budget_total and budget_total > 0:
         cost_eff = 0.10 * max(0.0, 1.0 - budget_used / budget_total) * activity
 
+    capacity = (0.05 if zero_capacity_violations(log) else 0.0) * activity
+
     invalid_count = count_invalid_actions(log)
     penalty = min(0.10, invalid_count * 0.03)
 
@@ -247,7 +292,14 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
         overrun_ratio = (budget_used - budget_total) / budget_total
         overrun_penalty = min(0.10, overrun_ratio * 0.20)
 
-    score = max(0.0, min(1.0, completion + parallelism + recovery + time_eff + cost_eff - penalty - overrun_penalty))
+    score = max(
+        0.0,
+        min(
+            1.0,
+            completion + parallelism + recovery + time_eff + cost_eff + capacity
+            - penalty - overrun_penalty,
+        ),
+    )
 
     result = GradeResult(
         score=round(score, 4),
@@ -257,6 +309,7 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
             "recovery": round(recovery, 4),
             "time_efficiency": round(time_eff, 4),
             "cost_efficiency": round(cost_eff, 4),
+            "capacity_discipline": round(capacity, 4),
             "invalid_penalty": round(-penalty, 4),
             "budget_overrun_penalty": round(-overrun_penalty, 4),
         },
@@ -273,8 +326,8 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
     """Grade a hard task episode (Production Incident Response).
 
     Weights: completion(0.20), recovery(0.15), error_class(0.10),
-    capacity(0.10), parallelism(0.10), cost(0.10), conflict(0.10),
-    sla(0.10), patience(0.05).
+    capacity(0.10), parallelism(0.08), cost(0.10), conflict(0.10),
+    sla(0.10), patience(0.05), recovery_speed(0.02).
     """
     completed = count_completed_subtasks(log)
     completion = (completed / 10) * 0.20
@@ -300,7 +353,7 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
 
     capacity = (0.10 if zero_capacity_violations(log) else 0.0) * activity
 
-    parallelism = 0.10 * compute_parallel_efficiency(log)
+    parallelism = 0.08 * compute_parallel_efficiency(log)
 
     budget_used = get_total_budget_used(log)
     budget_total = get_total_budget(log)
@@ -315,6 +368,7 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
     sla = 0.10 * (milestones_met / 2)
 
     patience = 0.05 if monitoring_completed(log) else 0.0
+    recovery_speed = 0.02 * compute_recovery_speed(log) * activity
 
     invalid_count = count_invalid_actions(log)
     invalid_penalty = min(0.10, invalid_count * 0.03)
@@ -327,7 +381,8 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
 
     score = max(0.0, min(1.0,
         completion + recovery + error_class + capacity + parallelism
-        + cost_eff + conflict + sla + patience - invalid_penalty - overrun_penalty
+        + cost_eff + conflict + sla + patience + recovery_speed
+        - invalid_penalty - overrun_penalty
     ))
 
     result = GradeResult(
@@ -342,6 +397,7 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
             "conflict_resolution": round(conflict, 4),
             "sla_compliance": round(sla, 4),
             "monitoring_patience": round(patience, 4),
+            "recovery_speed": round(recovery_speed, 4),
             "invalid_penalty": round(-invalid_penalty, 4),
             "budget_overrun_penalty": round(-overrun_penalty, 4),
         },
@@ -429,9 +485,9 @@ def subtask_not_completed_by_agent(
 def grade_expert(log: EpisodeLog) -> GradeResult:
     """Grade an expert task episode (Life OS Daily Orchestration).
 
-    10 dimensions: completion(0.15), health(0.12), career(0.10),
-    conflict(0.20), cost(0.08), parallelism(0.10), time(0.05),
-    error_class(0.08), sla(0.08), communication(0.04).
+    11 dimensions: completion(0.15), health(0.12), career(0.10),
+    conflict(0.20), cost(0.08), parallelism(0.10), time(0.03),
+    error_class(0.08), sla(0.08), communication(0.04), recovery_speed(0.02).
     """
     breakdown: dict[str, float] = {}
 
@@ -498,13 +554,15 @@ def grade_expert(log: EpisodeLog) -> GradeResult:
 
     # 7. Time efficiency: 5%
     if episode_completed(log) and log.time_remaining > 0:
-        breakdown["time_efficiency"] = (log.time_remaining / 25) * 0.05
+        breakdown["time_efficiency"] = (log.time_remaining / 25) * 0.03
     else:
         breakdown["time_efficiency"] = 0.0
 
     # 8. Error classification: 8% (gated by activity)
     perm_retries = count_retries_on_permanent_failure(log)
     breakdown["error_classification"] = max(0.0, 1.0 - 0.5 * perm_retries) * 0.08 * activity
+
+    breakdown["recovery_speed"] = 0.02 * compute_recovery_speed(log) * activity
 
     # 9. SLA compliance: 8%
     sla_milestones = {"plan_day_schedule": 8, "resolve_priority_conflict": 16, "synthesize_day_report": 23}

@@ -70,6 +70,11 @@ class TestReset:
         assert obs.time_remaining == 22
         assert obs.capacity_limit == 3
 
+    def test_reset_includes_critical_path_length(self) -> None:
+        env, obs = _make_env("medium")
+        assert obs.critical_path_length is not None
+        assert obs.critical_path_length > 0
+
 
 # ── Validation tests ──
 
@@ -180,6 +185,42 @@ class TestExecution:
             obs = _wait(env)
         assert obs.done is True
         assert obs.time_remaining == 0
+
+    def test_reward_breakdown_exposed_in_observation(self) -> None:
+        env, _ = _make_env("easy")
+        obs = _delegate(env, "technical_design", "tech_lead")
+        assert obs.reward_breakdown is not None
+        assert obs.reward_breakdown["delegation"] == pytest.approx(0.05)
+        assert obs.reward_breakdown["subtask_completed"] == pytest.approx(0.08)
+
+    def test_sla_hint_overrides_generic_ready_hint(self) -> None:
+        env, _ = _make_env("hard")
+        for _ in range(7):
+            obs = _wait(env)
+        assert obs.hint is not None
+        assert "SLA WARNING" in obs.hint
+
+    def test_parallelism_reward_only_on_new_parallel_window(self) -> None:
+        env, _ = _make_env("medium")
+        env._pool._agents["test_service"].speed = 3
+        env._pool._agents["security_scanner"].speed = 3
+        env._agent_speeds["test_service"] = 3
+        env._agent_speeds["security_scanner"] = 3
+
+        _delegate(env, "checkout_code", "ci_runner")
+        env._pool._agents["ci_runner"].status = "offline"
+
+        _delegate(env, "run_unit_tests", "test_service")
+        obs = _delegate(env, "run_security_scan", "security_scanner")
+        assert obs.reward_breakdown is not None
+        assert obs.reward_breakdown["parallelism"] == pytest.approx(0.10)
+        assert env._parallelism_events == 1
+
+        obs = _wait(env)
+        assert env._parallelism_events == 2
+        assert obs.reward_breakdown is not None
+        assert "parallelism" not in obs.reward_breakdown
+        assert obs.reward == pytest.approx(0.11, abs=0.01)
 
 
 # ── Full walkthrough ──
@@ -388,7 +429,7 @@ class TestHardTaskWalkthrough:
         assert result.score <= 1.0
 
     def test_grader_all_dimensions_present(self) -> None:
-        """All 9 grader dimensions should be present and non-negative."""
+        """All hard-task grader dimensions should be present and non-negative."""
         from server.graders import grade_hard
 
         env, obs = self._run_known_good_sequence()
@@ -399,6 +440,7 @@ class TestHardTaskWalkthrough:
             "completion", "recovery", "error_classification",
             "capacity_discipline", "parallelism", "cost_efficiency",
             "conflict_resolution", "sla_compliance", "monitoring_patience",
+            "recovery_speed",
         ]
         for key in expected_keys:
             assert key in result.breakdown, f"Missing grader dimension: {key}"
@@ -421,6 +463,7 @@ class TestHardTaskWalkthrough:
         assert result.breakdown["conflict_resolution"] == pytest.approx(0.10, abs=0.01)
         assert result.breakdown["sla_compliance"] == pytest.approx(0.10, abs=0.01)
         assert result.breakdown["monitoring_patience"] == pytest.approx(0.05, abs=0.01)
+        assert result.breakdown["recovery_speed"] == pytest.approx(0.02, abs=0.01)
 
 
 class TestHardTaskEdgeCases:
@@ -486,8 +529,8 @@ class TestHardTaskEdgeCases:
         assert result.breakdown["completion"] == 0.0
         assert result.breakdown["recovery"] == 0.0
         assert result.breakdown["sla_compliance"] == 0.0
-        # 19 keys: 9 dimensions + invalid_penalty + budget_overrun_penalty + 8 diagnostic metadata
-        assert len(result.breakdown) == 19
+        # 20 keys: 10 dimensions + invalid_penalty + budget_overrun_penalty + 8 diagnostic metadata
+        assert len(result.breakdown) == 20
 
     def test_sla_penalty_when_delayed(self) -> None:
         """Delaying root_cause past step 10 should incur SLA penalties."""
@@ -659,7 +702,7 @@ class TestExpertTaskWalkthrough:
         assert result.score <= 1.0
 
     def test_grader_all_dimensions_present(self) -> None:
-        """All 10 grader dimensions should be present and non-negative."""
+        """All expert-task grader dimensions should be present and non-negative."""
         from server.graders import grade_expert
 
         env, obs = self._run_known_good_sequence()
@@ -670,14 +713,14 @@ class TestExpertTaskWalkthrough:
             "completion", "health_pillar", "career_pillar",
             "conflict_resolution", "cost_efficiency", "parallelism",
             "time_efficiency", "error_classification", "sla_compliance",
-            "communication",
+            "communication", "recovery_speed",
         ]
         for key in expected_keys:
             assert key in result.breakdown, f"Missing grader dimension: {key}"
             assert result.breakdown[key] >= 0.0, f"{key} is negative"
 
     def test_grader_perfect_dimensions(self) -> None:
-        """Verify the known-good walkthrough scores perfectly on 8 of 10 dimensions."""
+        """Verify the known-good walkthrough scores strongly across key dimensions."""
         from server.graders import grade_expert
 
         env, obs = self._run_known_good_sequence()
@@ -693,10 +736,11 @@ class TestExpertTaskWalkthrough:
         assert result.breakdown["error_classification"] == pytest.approx(0.08, abs=0.001)
         assert result.breakdown["sla_compliance"] == pytest.approx(0.08, abs=0.001)
         assert result.breakdown["communication"] == pytest.approx(0.04, abs=0.001)
+        assert result.breakdown["recovery_speed"] == pytest.approx(0.02, abs=0.001)
 
-        # Partial dimensions (cost efficiency ~0.064, time efficiency ~0.014)
+        # Partial dimensions (cost efficiency ~0.064, time efficiency ~0.008)
         assert result.breakdown["cost_efficiency"] > 0.05
-        assert result.breakdown["time_efficiency"] > 0.01
+        assert result.breakdown["time_efficiency"] > 0.005
 
     def test_sla_milestones_all_met(self) -> None:
         """All 3 SLA milestones should be met."""

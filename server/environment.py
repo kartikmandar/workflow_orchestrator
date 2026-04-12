@@ -86,6 +86,8 @@ class OrchestratorEnvironment(
 
         self._output_templates: dict[str, str] = {}
         self._agent_speeds: dict[str, int] = {}
+        self._critical_path_length: Optional[int] = None
+        self._prev_parallel_count: int = 0
 
         self._state_obj: OrchestratorState = OrchestratorState(
             task_id="", task_name="", difficulty="",
@@ -125,6 +127,17 @@ class OrchestratorEnvironment(
         self._agent_speeds = {
             a["name"]: a["speed"] for a in config.agent_definitions
         }
+        min_durations: dict[str, int] = {}
+        for subtask in config.subtask_definitions:
+            capable_speeds = [
+                agent["speed"]
+                for agent in config.agent_definitions
+                if subtask["type"] in agent["capabilities"]
+            ]
+            min_durations[subtask["id"]] = min(capable_speeds) if capable_speeds else 1
+        self._critical_path_length = self._dag.compute_critical_path_length(
+            min_durations
+        )
 
         self._step_count = 0
         self._time_elapsed = 0
@@ -137,6 +150,7 @@ class OrchestratorEnvironment(
         self._failures_recovered = 0
         self._parallelism_events = 0
         self._capacity_violations = 0
+        self._prev_parallel_count = 0
 
         self._state_obj = OrchestratorState(
             task_id=config.task_id,
@@ -160,7 +174,7 @@ class OrchestratorEnvironment(
             step_count=0,
         )
 
-        return self._build_observation(reward=0.0, errors=[])
+        return self._build_observation(reward=0.0, errors=[], breakdown=None)
 
     # ── Step ──
 
@@ -179,7 +193,7 @@ class OrchestratorEnvironment(
             )
 
         errors_this_step: list[str] = []
-        events_this_step: list[dict[str, Any]] = []
+        reward_events_this_step: list[dict[str, Any]] = []
 
         # Step 1: Validate action
         valid, error = self._validate_action(action)
@@ -205,15 +219,17 @@ class OrchestratorEnvironment(
 
         # Step 4: Detect parallelism BEFORE tick (captures concurrent assignments)
         in_progress = self._dag.get_in_progress_subtasks()
+        current_parallel = len(in_progress)
         if len(in_progress) >= 2:
-            events_this_step.append({
-                "event_type": "parallelism",
-                "concurrent_tasks": list(in_progress),
-            })
             self._log.append(self._step_count, "parallelism", {
                 "concurrent_tasks": list(in_progress),
             })
             self._parallelism_events += 1
+        if current_parallel >= 2 and current_parallel > self._prev_parallel_count:
+            reward_events_this_step.append({
+                "event_type": "parallelism_reward",
+                "concurrent_tasks": list(in_progress),
+            })
 
         # Step 5: Tick agent pool
         tick_results = self._pool.tick(self._step_count)
@@ -225,7 +241,7 @@ class OrchestratorEnvironment(
                 attempt = self._dag.get_subtask_attempt_count(result.subtask_id)
                 if attempt > 0:
                     self._failures_recovered += 1
-                events_this_step.append({
+                reward_events_this_step.append({
                     "event_type": "subtask_completed",
                     "subtask_id": result.subtask_id,
                 })
@@ -238,11 +254,6 @@ class OrchestratorEnvironment(
                 self._dag.fail(result.subtask_id, result.output_or_error)
                 self._pool.release_agent(result.agent_name)
                 self._failures_occurred += 1
-                events_this_step.append({
-                    "event_type": "subtask_failed",
-                    "subtask_id": result.subtask_id,
-                    "is_permanent": result.is_permanent_failure,
-                })
                 self._log.append(self._step_count, "subtask_failed", {
                     "subtask_id": result.subtask_id,
                     "agent_name": result.agent_name,
@@ -266,12 +277,14 @@ class OrchestratorEnvironment(
 
         # Step 7: Update DAG ready statuses
         self._dag.update_ready_statuses()
+        self._prev_parallel_count = self._pool.get_active_count()
 
         # Step 8: Calculate step reward
         step_reward = self._rc.calculate_step_reward(
             action, valid, error, self._dag, self._pool,
-            self._log, self._step_count, events_this_step,
+            self._log, self._step_count, reward_events_this_step,
         )
+        step_breakdown = self._rc.last_breakdown
         self._total_reward += step_reward
 
         # Step 9: Advance time
@@ -290,6 +303,10 @@ class OrchestratorEnvironment(
             )
             self._total_reward += end_bonus
             step_reward += end_bonus
+            if end_bonus != 0.0:
+                step_breakdown["end_bonus"] = (
+                    step_breakdown.get("end_bonus", 0.0) + end_bonus
+                )
 
             # Sync log metadata
             self._log.total_steps = self._step_count
@@ -329,7 +346,11 @@ class OrchestratorEnvironment(
             step_count=self._step_count,
         )
 
-        return self._build_observation(reward=step_reward, errors=errors_this_step)
+        return self._build_observation(
+            reward=step_reward,
+            errors=errors_this_step,
+            breakdown=step_breakdown,
+        )
 
     # ── State property ──
 
@@ -465,7 +486,10 @@ class OrchestratorEnvironment(
     # ── Private: observation building ──
 
     def _build_observation(
-        self, reward: float, errors: list[str]
+        self,
+        reward: float,
+        errors: list[str],
+        breakdown: Optional[dict[str, float]] = None,
     ) -> OrchestratorObservation:
         """Build the full observation from current state."""
         cost_budget = self._config.constraints.get("cost_budget")
@@ -490,6 +514,8 @@ class OrchestratorEnvironment(
             budget_used=budget_used,
             available_actions=self._compute_available_actions(),
             hint=self._compute_hint(),
+            critical_path_length=self._critical_path_length,
+            reward_breakdown=breakdown,
             sla_milestones=self._config.sla_milestones,
             failures_occurred=self._failures_occurred,
             failures_recovered=self._failures_recovered,
@@ -556,17 +582,39 @@ class OrchestratorEnvironment(
             elif capable:
                 return f"'{f}' failed — all capable agents have permanent failures, try a different agent"
 
-        # Priority 2: Ready subtasks + idle agents
+        # Priority 2: SLA warnings for imminent deadlines
+        if self._config.sla_milestones:
+            for subtask_id, deadline in self._config.sla_milestones.items():
+                steps_left = deadline - self._time_elapsed
+                status = self._dag.get_subtask_status(subtask_id)
+                if 0 < steps_left <= 3 and status != "completed":
+                    return (
+                        f"SLA WARNING: '{subtask_id}' due by step {deadline} "
+                        f"({steps_left} step(s) left)"
+                    )
+
+        # Priority 3: Budget pressure
+        cost_budget = self._config.constraints.get("cost_budget")
+        if cost_budget is not None and cost_budget > 0:
+            budget_used = self._pool.get_budget_used()
+            budget_ratio = budget_used / cost_budget
+            if budget_ratio >= 0.70:
+                return (
+                    f"BUDGET: {budget_used:.1f}/{cost_budget:.1f} used "
+                    f"({budget_ratio * 100:.0f}%) — prefer cheaper agents"
+                )
+
+        # Priority 4: Ready subtasks + idle agents
         ready = self._dag.get_ready_subtasks()
         idle = self._pool.get_idle_agents()
         if ready and idle:
             return f"{len(ready)} subtask(s) ready, {len(idle)} agent(s) idle"
 
-        # Priority 3: All complete
+        # Priority 5: All complete
         if self._dag.is_all_completed():
             return "All subtasks complete — synthesize to finish"
 
-        # Priority 4: Time pressure
+        # Priority 6: Time pressure
         if self._time_remaining <= 3:
             return f"Only {self._time_remaining} step(s) remaining"
 

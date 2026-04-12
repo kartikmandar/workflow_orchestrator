@@ -5,6 +5,7 @@ import pytest
 from models import EpisodeLog, GradeResult
 from server.graders import (
     both_findings_aggregated,
+    compute_recovery_speed,
     compute_parallel_efficiency,
     count_completed_subtasks,
     count_invalid_actions,
@@ -164,6 +165,27 @@ class TestHelperFunctions:
         _add_invalid(log, 1, error="capacity limit exceeded")
         assert not zero_capacity_violations(log)
 
+    def test_compute_recovery_speed_no_failures(self) -> None:
+        log = _make_log()
+        assert compute_recovery_speed(log) == 1.0
+
+    def test_compute_recovery_speed_immediate_retry(self) -> None:
+        log = _make_log()
+        _add_failed(log, "scan", 2)
+        log.append(3, "action_taken", {"action_type": "retry", "subtask_id": "scan"})
+        assert compute_recovery_speed(log) == pytest.approx(1.0, abs=0.001)
+
+    def test_compute_recovery_speed_delayed_retry(self) -> None:
+        log = _make_log()
+        _add_failed(log, "scan", 2)
+        log.append(5, "action_taken", {"action_type": "retry", "subtask_id": "scan"})
+        assert compute_recovery_speed(log) == pytest.approx(0.3333, abs=0.001)
+
+    def test_compute_recovery_speed_failure_without_retry(self) -> None:
+        log = _make_log()
+        _add_failed(log, "scan", 2)
+        assert compute_recovery_speed(log) == 0.0
+
 
 # ── Grader tests ──
 
@@ -177,7 +199,7 @@ class TestEasyGrader:
         ]):
             _add_completed(log, sid, i + 1)
         _add_parallelism(log, 4, ["implement_frontend", "write_tests"])
-        _add_episode_end(log, 12)
+        _add_episode_end(log, 7)
         result = grade_easy(log)
         assert result.score == pytest.approx(1.0, abs=0.01)
 
@@ -220,6 +242,7 @@ class TestMediumGrader:
         result = grade_medium(log)
         # Should get good score: completion + parallelism + recovery + time + cost
         assert result.score > 0.7
+        assert "capacity_discipline" in result.breakdown
 
 
 class TestHardGrader:

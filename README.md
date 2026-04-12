@@ -36,9 +36,29 @@ curl -X POST http://localhost:8000/step -H "Content-Type: application/json" \
 ```
 
 ```bash
-# Run inference (needs an LLM API)
-export HF_TOKEN=<your-token>
+# Run inference (works with any OpenAI-compatible API)
+export API_BASE_URL=<openai-compatible-base-url>
+export API_KEY=<provider-api-key>
+export MODEL_NAME=<provider-model-name>
+python inference.py
+```
+
+`inference.py` accepts any OpenAI-compatible `API_BASE_URL`. It reads `API_KEY`
+first and falls back to `HF_TOKEN` when using providers that expose Hugging Face
+tokens.
+
+Examples:
+
+```bash
+# OpenRouter
+export API_BASE_URL=https://openrouter.ai/api/v1
+export API_KEY=<openrouter-api-key>
+export MODEL_NAME=qwen/qwen3-32b
+python inference.py
+
+# Hugging Face Router
 export API_BASE_URL=https://router.huggingface.co/v1
+export HF_TOKEN=<hugging-face-token>
 export MODEL_NAME=Qwen/Qwen3-32B
 python inference.py
 ```
@@ -176,20 +196,27 @@ Each task has a grader that looks at the full event log, not just the final stat
 
 Graders use **activity gates**: scoring dimensions that reward "doing no harm" (like error classification or staying within capacity) only count if the agent actually completed enough subtasks. An agent that does nothing scores 0.01, not free points.
 
+Recent grader additions:
+- **Easy** includes `step_efficiency`, which rewards finishing near the theoretical minimum step count.
+- **Medium** includes `capacity_discipline`, which rewards staying within the concurrent-task limit.
+- **Hard** and **Expert** include `recovery_speed`, which rewards retrying failed subtasks quickly instead of letting them sit.
+
 **Rewards** come every step, not just at the end. Positive: correct delegation (+0.05), subtask done (+0.08), parallel tasks (+0.10), failure recovered (+0.10), useful wait (+0.03). Negative: dependency violation (-0.10), capacity violation (-0.15), wrong agent (-0.05), ignoring a failure for 2+ steps (-0.08). Step rewards guide learning; grader scores measure the final result. They are different on purpose.
+
+Observations are also richer than the raw state alone: they include a one-line `hint`, a `critical_path_length` estimate, and a per-step `reward_breakdown`. Hints now surface SLA pressure and budget pressure in addition to failure recovery guidance and generic ready-task nudges.
 
 ## Benchmarks
 
-Single run, Qwen3-32B through OpenRouter, temperature=0, max_tokens=4096:
+Latest single run from `inference.py`, using Qwen3-32B through OpenRouter, temperature=0, max_tokens=4096:
 
 | Policy | Easy | Medium | Hard | Expert |
 |--------|------|--------|------|--------|
 | Do-nothing | 0.01 | 0.01 | 0.01 | 0.01 |
 | Greedy heuristic | 0.90 | 0.63 | 0.07 | 0.78 |
-| **Qwen3-32B** | **0.90** | **0.62** | **0.72** | **0.70** |
+| **Qwen3-32B** | **0.9000** | **0.6263** | **0.6775** | **0.7567** |
 | Best known (hand-written) | 0.90 | 0.63 | 0.78 | 0.95 |
 
-The hard task is where scores vary most. The greedy heuristic scores 0.07 because it keeps retrying the permanently failing agent. The expert task has the biggest gap to the best known score (0.25) because balancing multiple goals is hard for current LLMs. The greedy heuristic scores higher than the LLM on expert (0.78 vs 0.70) because it delegates quickly and racks up completion points, but it blows the cost budget (budget overrun penalty) and scores 0.0 on conflict resolution, which is where the best known policy (0.95) pulls ahead.
+The hard and expert tasks still show the most variance. In the current run, the model handled easy cleanly, stayed near baseline on medium, exited hard too early and left monitoring/SLA points behind, and recovered enough on expert to beat the prior 0.70 example run.
 
 ## API
 
@@ -223,7 +250,7 @@ workflow_orchestrator/
 │   ├── graders.py            # Episode grading
 │   ├── task_registry.py      # Task configs
 │   └── gradio_ui.py          # Dashboard
-└── tests/                    # 161 tests
+└── tests/                    # 170 tests
 ```
 
 ## Known Limitations

@@ -46,11 +46,19 @@ class TestPositiveSignals:
         dag.delegate("technical_design", "tech_lead")
         pool.assign("tech_lead", "technical_design", "technical_design", 0)
         dag.update_ready_statuses()
-        events = [{"event_type": "parallelism", "concurrent_tasks": ["t1", "t2"]}]
+        events = [{"event_type": "parallelism_reward", "concurrent_tasks": ["t1", "t2"]}]
         action = OrchestratorAction(action_type="wait")
         reward = rc.calculate_step_reward(action, True, None, dag, pool, log, 1, events)
         # +0.10 (parallelism) +0.03 (efficient_wait)
         assert reward == pytest.approx(0.13, abs=0.01)
+
+    def test_last_breakdown_tracks_raw_components(self) -> None:
+        _, dag, pool, rc, log = _setup_easy()
+        action = OrchestratorAction(
+            action_type="delegate", subtask_id="technical_design", agent_name="tech_lead"
+        )
+        rc.calculate_step_reward(action, True, None, dag, pool, log, 1, [])
+        assert rc.last_breakdown["delegation"] == pytest.approx(0.05)
 
     def test_efficient_wait(self) -> None:
         _, dag, pool, rc, log = _setup_easy()
