@@ -13,17 +13,70 @@ tags:
 
 # Workflow Orchestrator
 
-An OpenEnv environment for training LLM agents to coordinate DAG-based workflows. The agent acts as a project coordinator — delegating subtasks to simulated specialist agents, managing dependencies, recovering from failures, and staying within time and cost budgets.
+An OpenEnv environment for evaluating how well an LLM agent can coordinate DAG-based workflows. The agent assigns subtasks to simulated specialist agents, exploits parallelism, recovers from failures, manages limited capacity, and synthesizes outputs under time and cost constraints.
 
-The four tasks form a narrative arc: **build** a feature, **ship** it through CI/CD, **fix** the production outage it causes, and **orchestrate** a full day across competing priorities. Each level introduces qualitatively different reasoning, not just more nodes.
+Four scenarios of increasing difficulty: feature development, CI/CD deployment, production incident response, and daily planning across competing priorities. Each level requires a different kind of reasoning — the hard task isn't just a bigger DAG, it's a fundamentally different problem.
 
-Nothing like this exists in OpenEnv today. Existing environments test tool use (Calendar Gym), code execution (Coding Env), or web navigation (BrowserGym). None test coordination, delegation, parallelism, failure recovery, or cost management — the core challenges of agent orchestration, which is the #1 enterprise AI trend heading into 2027.
+To our knowledge, OpenEnv currently lacks a benchmark focused on multi-agent orchestration. This environment covers coordination behaviors — delegation, dependency tracking, failure recovery, cost management — that are underrepresented in existing tasks.
+
+## Quickstart
+
+```bash
+# Local
+cd workflow_orchestrator && uv sync
+uv run server
+# Server starts at http://localhost:8000
+
+# Docker
+docker build -t workflow-orchestrator .
+docker run -p 8000:8000 workflow-orchestrator
+
+# Try it
+curl -X POST http://localhost:8000/reset -H "Content-Type: application/json" -d '{"task_id": "easy"}'
+curl -X POST http://localhost:8000/step -H "Content-Type: application/json" \
+  -d '{"action_type": "delegate", "subtask_id": "technical_design", "agent_name": "tech_lead"}'
+```
+
+```bash
+# Run inference (needs an LLM API)
+export HF_TOKEN=<your-token>
+export API_BASE_URL=https://router.huggingface.co/v1
+export MODEL_NAME=Qwen/Qwen3-32B
+python inference.py
+```
+
+## Example: Hard Task Walkthrough
+
+An annotated trace showing the agent navigating the Production Incident Response. This is the task that separates heuristics from reasoning — a greedy policy scores 0.07 here.
+
+```
+Step  1: delegate(alert_triage, triage_analyst)       → Triage confirmed, 3 investigation tracks unlocked
+Step  2: delegate(enrich_logs, investigator_alpha)     → FAILS. Permanent failure — alpha lacks log tooling.
+Step  3: delegate(check_dashboards, monitor)           → Parallelism: 2 tasks concurrent (+0.10)
+Step  4: retry(enrich_logs, investigator_beta)         → Correct recovery: switched to a different agent
+Step  5: delegate(check_dependencies, investigator_alpha)  → Alpha can still do other task types
+Step  6: delegate(notify_stakeholders, communicator)   → Side channel — doesn't block critical path
+Step  7: delegate(root_cause_analysis, senior_engineer)
+         → enrich_logs (beta) and check_dashboards (monitor) completed by
+           different agents — conflict resolution criterion met
+Step  8: delegate(deploy_hotfix, deployer)             → Must happen before deployer goes offline at step 12
+Step  9: delegate(update_status_page, communicator)
+Step 10: delegate(validate_fix, senior_engineer)
+Step 11: delegate(monitor_recovery, monitor)
+Step 12: wait                                          → Monitoring patience (1 of 2 required waits)
+Step 13: wait                                          → Monitoring patience (2 of 2)
+Step 14: synthesize                                    → All 10 subtasks complete
+
+Score: 0.78 | 10/10 subtasks, 1/2 recoveries, 2/2 SLA milestones met
+```
+
+What makes this hard: the agent must (1) recognize a permanent failure and switch agents, (2) use different agents for the two investigation tracks so the grader credits conflict resolution, (3) deploy the hotfix before the deployer drops out at step 12, (4) resist synthesizing immediately after validate_fix and wait 2 steps for monitoring.
 
 ## Tasks
 
 ### Easy: Feature Development Sprint
 
-6 subtasks, 4 agents (all reliable). Straightforward DAG traversal with an optional parallelism opportunity.
+6 subtasks, 4 agents (all reliable, same cost). Basic DAG traversal with an optional parallelism opportunity where `implement_frontend` and `write_tests` can run concurrently.
 
 ```mermaid
 graph LR
@@ -35,11 +88,11 @@ graph LR
     E --> F[review_and_merge]
 ```
 
-Time budget: 15 steps. Capacity: 4 concurrent. No cost budget.
+Time: 15 steps. Capacity: 4. No cost budget.
 
 ### Medium: Microservice Deployment Pipeline
 
-9 subtasks, 5 agents with varying speed and cost. The security scanner is guaranteed to fail on the first attempt (reliability override `[0.0, 1.0]`) — the agent must recognize the failure, retry, and still stay within the cost budget of 35.
+9 subtasks, 5 agents with varying speed (1-2) and cost (1.0-3.0). The security scanner always fails its first attempt (reliability override `[0.0, 1.0]`). Three-way fan-out after checkout means the agent should parallelize lint, unit tests, and security scan.
 
 ```mermaid
 graph LR
@@ -55,11 +108,11 @@ graph LR
     H --> I[production]
 ```
 
-Time budget: 16 steps. Capacity: 3 concurrent. Cost budget: 35.
+Time: 16 steps. Capacity: 3. Cost budget: 35.
 
 ### Hard: Production Incident Response
 
-10 subtasks, 7 agents with overlapping capabilities and costs ranging from 1.0 to 5.0. Two designed failure traps: `investigator_alpha` permanently cannot do `enrich_logs` (it lacks the log tooling), and `deployer` drops offline at step 12. The agent must classify errors (permanent vs transient), reassign to different agents, and meet SLA milestones (root cause by step 10, hotfix deployed by step 16). Two investigation tracks produce conflicting findings — the grader checks that the agent used different agents for each to properly aggregate evidence.
+10 subtasks, 7 agents with overlapping capabilities and costs from 1.0 to 5.0. Two designed failure traps: `investigator_alpha` permanently cannot do `enrich_logs`, and `deployer` drops offline at step 12. SLA milestones require root cause by step 10 and hotfix by step 16. Two investigation tracks produce conflicting findings — the grader checks that different agents ran each track.
 
 ```mermaid
 graph LR
@@ -76,11 +129,11 @@ graph LR
     I --> J[monitor_recovery]
 ```
 
-Time budget: 22 steps. Capacity: 3 concurrent. Cost budget: 40. SLA milestones: root_cause by step 10, deploy_hotfix by step 16.
+Time: 22 steps. Capacity: 3. Cost budget: 40.
 
-### Expert (Bonus): Life OS Daily Orchestration
+### Expert: Life OS Daily Orchestration
 
-14 subtasks across health, career, and personal pillars. 8 agents including 2 permanent failure traps. Career agent slows down at step 7, personal agent drops offline at step 10. The agent must balance competing objectives — sacrificing health entirely for career throughput is penalized. Two conflict resolution points require the agent to reconcile contradictory inputs.
+14 subtasks across health, career, and personal pillars. 8 agents including 2 permanent failure traps. Career agent slows down at step 7, personal agent drops out at step 10. The agent must balance competing objectives — sacrificing health entirely for career throughput is penalized. Two conflict resolution points require reconciling contradictory inputs.
 
 ```mermaid
 graph LR
@@ -103,9 +156,9 @@ graph LR
     M --> N
 ```
 
-Time budget: 25 steps. Capacity: 3 concurrent. Cost budget: 55. SLA milestones: plan by step 8, resolve conflict by step 16, synthesize by step 23.
+Time: 25 steps. Capacity: 3. Cost budget: 55.
 
-## Action Space
+## Actions
 
 Five actions, sent as JSON:
 
@@ -117,40 +170,19 @@ Five actions, sent as JSON:
 {"action_type": "abort", "subtask_id": "stuck_task"}
 ```
 
-Invalid actions are accepted but penalized — the step is consumed, the penalty is applied, and state doesn't change. This is deliberate: RL agents learn from negative signals, and silent rejection teaches nothing.
+Invalid actions are accepted but penalized — the step is consumed, a penalty applies, and state doesn't change. This is intentional: RL agents learn from negative signals.
 
-## Observation Space
+## Scoring
 
-Each step returns a full observation with: task description, subtask statuses (pending/ready/in_progress/completed/failed with dependencies, assignments, errors, attempt counts), agent statuses (idle/working/offline with capabilities, speed, cost, reliability), completed outputs, time remaining, capacity usage, budget tracking, available actions, SLA milestones, failure counts, and an optional hint.
+Each task has a multi-dimensional grader that analyzes the episode event log. Scores are in [0.0, 1.0] with breakdowns including diagnostic metadata (subtask counts, recovery counts, SLA details).
 
-## Reward Design
+Graders use **activity gates**: dimensions that reward "no harm" (error classification, capacity discipline, cost efficiency) scale with actual completion. A do-nothing policy earns 0.01.
 
-Dense per-step rewards — not just a binary score at the end.
+**Reward signals** are dense and per-step — not binary end-of-episode. Positive: correct delegation (+0.05), subtask completed (+0.08), parallelism (+0.10), failure recovered (+0.10), efficient wait (+0.03). Negative: dependency violation (-0.10), capacity violation (-0.15), wrong agent (-0.05), unrecovered failure (-0.08 after 2+ steps). Per-step rewards are training signals; grader scores are episode-level evaluation metrics. These intentionally diverge.
 
-Positive signals: correct delegation (+0.05), subtask completed (+0.08), parallelism exploited (+0.10), failure recovered (+0.10), efficient wait (+0.03), cost-efficient choice (+0.04), communication sent (+0.05).
+## Benchmarks
 
-Negative signals: dependency violation (-0.10), capacity violation (-0.15), wrong agent (-0.05), permanent retry (-0.06), unnecessary wait (-0.03), unrecovered failure (-0.08 after 2+ steps), SLA penalty (-0.05/step past deadline, capped).
-
-End-of-episode: +0.20 for completing all subtasks and synthesizing, plus time and cost efficiency bonuses. -0.10 for incomplete episodes.
-
-Per-step rewards are RL training signals. Grader scores are episode-level evaluation metrics. These intentionally diverge — rewards encourage action discovery, graders evaluate trajectory quality.
-
-## Grading
-
-Each task has a multi-dimensional grader that analyzes the episode event log (not just the final state). Scores are in [0.0, 1.0] with detailed breakdowns including diagnostic metadata (subtask counts, recovery counts, SLA milestone details).
-
-Graders use **activity gates**: dimensions that reward "no harm" (error classification, capacity discipline, cost efficiency) scale with actual completion. A do-nothing policy earns 0.01, not free points.
-
-| Task | Dimensions | Heaviest Weights |
-|------|-----------|-----------------|
-| Easy | 7 | completion (85%), parallelism bonus (10%) |
-| Medium | 8 | completion (40%), parallelism (20%), failure recovery (20%) |
-| Hard | 18 | completion (20%), recovery (15%), SLA (10%), conflict resolution (10%), + diagnostics |
-| Expert | 15 | conflict resolution (20%), completion (15%), health pillar (12%), + diagnostics |
-
-## Baseline Scores
-
-Tested with Qwen3-32B via OpenRouter (temperature=0):
+Single-run scores, Qwen3-32B via OpenRouter, temperature=0, max_tokens=4096:
 
 | Policy | Easy | Medium | Hard | Expert |
 |--------|------|--------|------|--------|
@@ -159,25 +191,7 @@ Tested with Qwen3-32B via OpenRouter (temperature=0):
 | **Qwen3-32B** | **0.90** | **0.63** | **0.73** | **0.74** |
 | Oracle | 0.90 | 0.63 | 0.78 | 0.95 |
 
-The hard task is the strongest discriminator — the greedy heuristic scores 0.07 because it gets trapped retrying the permanently failing agent. The expert task has the largest oracle gap (0.21) because multi-objective balancing across pillars is genuinely hard for current LLMs.
-
-## Setup
-
-```bash
-# Local
-cd workflow_orchestrator && uv sync
-uv run server
-
-# Docker
-docker build -t workflow-orchestrator .
-docker run -p 8000:8000 workflow-orchestrator
-
-# Inference
-export HF_TOKEN=<your-token>
-export API_BASE_URL=https://router.huggingface.co/v1
-export MODEL_NAME=Qwen/Qwen3-32B
-python inference.py
-```
+The hard task is the strongest discriminator — the greedy heuristic scores 0.07 because it gets stuck retrying the permanently failing agent. The expert task has the largest oracle gap (0.21) because multi-objective balancing is genuinely hard for current LLMs. The greedy heuristic actually outperforms the LLM on expert (0.87 vs 0.74) because rapid delegation beats deliberation when subtasks are straightforward — but it can't handle the conflict resolution points that the oracle nails.
 
 ## API
 
@@ -186,41 +200,40 @@ python inference.py
 | `/reset` | POST | Start new episode (pass `{"task_id": "hard"}` to select task) |
 | `/step` | POST | Execute an action |
 | `/state` | GET | Current state snapshot |
-| `/tasks` | GET | List available tasks with metadata |
+| `/tasks` | GET | List available tasks |
 | `/grader` | POST | Score the most recent episode |
 | `/baseline` | POST | Pre-computed baseline scores |
-| `/health` | GET | Container health check |
+| `/health` | GET | Health check |
 | `/web` | GET | Interactive dashboard |
-| `/ws` | WS | WebSocket for persistent sessions |
 
 ## Project Structure
 
 ```
 workflow_orchestrator/
-├── inference.py              # Baseline inference script (repo root)
-├── baseline_scores.json      # Pre-computed scores
-├── models.py                 # Pydantic Action/Observation/State models
-├── client.py                 # OrchestratorClient (EnvClient subclass)
-├── openenv.yaml              # OpenEnv manifest
-├── Dockerfile                # Multi-stage build
+├── inference.py              # Baseline inference script
+├── baseline_scores.json
+├── models.py                 # Pydantic Action/Observation/State
+├── client.py                 # EnvClient subclass
+├── openenv.yaml
+├── Dockerfile
 ├── server/
 │   ├── app.py               # FastAPI app + custom endpoints
 │   ├── environment.py        # Core environment (reset/step/state)
-│   ├── dag_executor.py       # DAG state tracking + topological sort
+│   ├── dag_executor.py       # DAG tracking + topological sort
 │   ├── agent_pool.py         # Simulated agents with seeded failures
-│   ├── reward_calculator.py  # Dense per-step reward computation
+│   ├── reward_calculator.py  # Dense per-step rewards
 │   ├── graders.py            # Multi-dimensional episode grading
-│   ├── task_registry.py      # Task configs (DAGs, agents, constraints)
-│   └── gradio_ui.py          # Mission Control dashboard
+│   ├── task_registry.py      # Task configs
+│   └── gradio_ui.py          # Dashboard
 └── tests/                    # 161 tests
 ```
 
 ## Known Limitations
 
-- The Qwen3-32B baseline sometimes retries permanently failing agents 2-3 times before switching. Error classification is the weakest LLM capability tested.
-- Cost optimization is underutilized — neither the LLM nor heuristic consistently picks cheaper agents when multiple capable agents exist.
-- Medium task parallelism has a structural ceiling (~0.80) due to agent speed mismatches making true 3-way overlap impossible.
+- The baseline sometimes retries permanently failing agents 2-3 times before switching. Error classification remains the weakest LLM capability here.
+- Cost optimization is underutilized — neither the LLM nor heuristic consistently picks cheaper agents when alternatives exist.
+- Medium parallelism has a structural ceiling (~0.80) because agent speed mismatches prevent true 3-way overlap.
 
-## Research Grounding
+## Design Background
 
-The task designs draw on the MAST taxonomy of multi-agent failure modes (14 modes across 150+ traces, [arxiv 2503.13657](https://arxiv.org/abs/2503.13657)), error amplification dynamics in agent networks ([arxiv 2603.04474](https://arxiv.org/abs/2603.04474)), the MARBLE finding that 3-agent teams optimize the coordination-performance tradeoff ([ACL 2025](https://aclanthology.org/2025.acl-long.421/)), and difficulty-aware orchestration strategies from DAAO ([arxiv 2509.11079](https://arxiv.org/html/2509.11079v1)). The dense reward design is informed by AgentErrorBench's finding that targeted RL feedback improves error recovery by up to 26% ([arxiv 2509.25370](https://arxiv.org/abs/2509.25370)).
+The task designs draw on the MAST taxonomy of multi-agent failure modes ([arxiv 2503.13657](https://arxiv.org/abs/2503.13657)), error amplification in agent networks ([arxiv 2603.04474](https://arxiv.org/abs/2603.04474)), MARBLE's finding that 3-agent teams optimize coordination overhead ([ACL 2025](https://aclanthology.org/2025.acl-long.421/)), and difficulty-aware orchestration from DAAO ([arxiv 2509.11079](https://arxiv.org/html/2509.11079v1)). Dense reward shaping is informed by AgentErrorBench's result that targeted RL feedback improves recovery by up to 26% ([arxiv 2509.25370](https://arxiv.org/abs/2509.25370)).
