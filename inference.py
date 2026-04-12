@@ -45,7 +45,7 @@ MAX_TOKENS: int = 4096  # High ceiling for verbose models; concise models just u
 MAX_STEPS: int = 50
 SUCCESS_SCORE_THRESHOLD: float = 0.1
 TASK_TIMEOUT_S: int = 600  # 10 min per task; total 4 tasks fits in 20 min hackathon limit
-HISTORY_WINDOW: int = 6  # Last 6 turns — expert task needs longer context to avoid repeating mistakes
+HISTORY_WINDOW: int = 12  # Last 12 turns — expert task (25 steps) needs longer context to avoid repeating mistakes
 
 VALID_ACTIONS: set[str] = {"delegate", "retry", "wait", "synthesize", "abort"}
 
@@ -73,11 +73,30 @@ DECISION PROCEDURE (follow this exact order):
 4. ONLY wait when no subtasks are READY or all capable agents are busy working.
 5. After validate_fix completes, wait 2 steps for monitoring before synthesizing.
 
+COST-BENEFIT ANALYSIS:
+- If budget is tight (>70% used), always pick the cheapest capable agent.
+- A fast expensive agent costs (cost_per_step * speed) total — compare before choosing.
+
+ERROR CLASSIFICATION:
+- "permanent failure" / "lacks required tooling" → agent can NEVER do this task. Use a DIFFERENT agent.
+- "may succeed on retry" → transient. Same or different agent can retry.
+- Never retry the same agent on a permanent failure — it wastes a step AND budget.
+
+SLA AWARENESS:
+- Check SLA Deadlines in the observation. Prioritize subtasks on the critical path to milestones.
+- If an SLA deadline is within 3 steps, delegate its prerequisites BEFORE side-channel tasks.
+
+MULTI-OBJECTIVE (when multiple pillars exist):
+- Don't sacrifice one pillar entirely for another — balance health/career/personal.
+- Use DIFFERENT agents for parallel investigation tasks to get diverse findings.
+- Complete communication subtasks — they have dedicated scoring weight.
+
 KEY PRINCIPLES:
 - MAXIMIZE PARALLELISM: If 3 subtasks are ready and 3 agents are idle, delegate all 3 in 3 consecutive steps.
 - NEVER wait when there is a READY subtask and an IDLE capable agent — this wastes a step.
 - Check the HINT line — it tells you what to do next.
 - Match subtask TYPE to agent CAPABILITIES (not just any agent).
+- Review COMPLETED OUTPUTS to understand what prior subtasks discovered.
 
 Respond with a single JSON object. Nothing else."""
 
@@ -184,6 +203,13 @@ def format_observation(obs: OrchestratorObservation) -> str:
             f"speed={a.speed} cost={a.cost_per_step:.1f} rel={a.reliability:.2f}{task_info}"
         )
     lines.append("")
+
+    # Completed outputs (so LLM can see what prior subtasks produced)
+    if obs.completed_outputs:
+        lines.append("-- COMPLETED OUTPUTS --")
+        for sid, output in obs.completed_outputs.items():
+            lines.append(f'  {sid}: "{output}"')
+        lines.append("")
 
     # Errors
     if obs.errors:

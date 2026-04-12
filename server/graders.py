@@ -219,8 +219,8 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
     completion = (completed / 9) * 0.40
 
     # Activity gate: cost efficiency should scale with actual activity.
-    # Reaching 3+ completions (33% of subtasks) earns full credit.
-    activity = min(1.0, completed / 3)
+    # Reaching 5+ completions (56% of subtasks) earns full credit.
+    activity = min(1.0, completed / 5)
 
     parallelism = 0.20 if fan_out_parallelism_detected(
         log, ["run_linter", "run_unit_tests", "run_security_scan"]
@@ -243,7 +243,7 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
 
     score = max(0.0, min(1.0, completion + parallelism + recovery + time_eff + cost_eff - penalty))
 
-    return GradeResult(
+    result = GradeResult(
         score=round(score, 4),
         breakdown={
             "completion": round(completion, 4),
@@ -254,6 +254,12 @@ def grade_medium(log: EpisodeLog) -> GradeResult:
             "invalid_penalty": round(-penalty, 4),
         },
     )
+
+    # Diagnostic metadata (informational, does not affect score)
+    result.breakdown["subtasks_completed"] = float(completed)
+    result.breakdown["subtasks_total"] = 9.0
+
+    return result
 
 
 def grade_hard(log: EpisodeLog) -> GradeResult:
@@ -269,8 +275,8 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
     # Activity gate: dimensions that reward "no harm" (error classification,
     # capacity discipline, cost efficiency) should scale with actual activity.
     # A do-nothing policy (0 completions) gets 0 on these dimensions.
-    # Reaching 3+ completions (30% of subtasks) earns full credit.
-    activity = min(1.0, completed / 3)
+    # Reaching 5+ completions (50% of subtasks) earns full credit.
+    activity = min(1.0, completed / 5)
 
     # Recovery: 0.15 split across two designed failure scenarios
     # - enrich_logs: investigator_alpha permanently fails (must use different agent)
@@ -311,7 +317,7 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
         + cost_eff + conflict + sla + patience - invalid_penalty
     ))
 
-    return GradeResult(
+    result = GradeResult(
         score=round(score, 4),
         breakdown={
             "completion": round(completion, 4),
@@ -326,6 +332,18 @@ def grade_hard(log: EpisodeLog) -> GradeResult:
             "invalid_penalty": round(-invalid_penalty, 4),
         },
     )
+
+    # Diagnostic metadata (informational, does not affect score)
+    result.breakdown["subtasks_completed"] = float(completed)
+    result.breakdown["subtasks_total"] = 10.0
+    result.breakdown["recoveries_achieved"] = float(recovery_count)
+    result.breakdown["recoveries_possible"] = 2.0
+    result.breakdown["sla_milestones_met"] = float(milestones_met)
+    result.breakdown["sla_milestones_total"] = 2.0
+    result.breakdown["permanent_retry_errors"] = float(perm_retries)
+    result.breakdown["invalid_actions"] = float(invalid_count)
+
+    return result
 
 
 # ── Expert grader helpers ──
@@ -408,9 +426,8 @@ def grade_expert(log: EpisodeLog) -> GradeResult:
     breakdown["completion"] = (completed / 14) * 0.15
 
     # Activity gate: "no harm" dimensions scale with actual activity.
-    # Reaching 3+ completions (21% of subtasks) earns full credit.
-    # Aligned with hard task's proportional threshold (3/10 = 30%).
-    activity = min(1.0, completed / 3)
+    # Reaching 7+ completions (50% of subtasks) earns full credit.
+    activity = min(1.0, completed / 7)
 
     # 2. Health pillar: 12%
     health_score = 0.0
@@ -490,10 +507,19 @@ def grade_expert(log: EpisodeLog) -> GradeResult:
     score -= min(0.15, 0.03 * invalid_count)
     score = max(0.0, min(1.0, score))
 
-    return GradeResult(
+    result = GradeResult(
         score=round(score, 4),
         breakdown={k: round(v, 4) for k, v in breakdown.items()},
     )
+
+    # Diagnostic metadata (informational, does not affect score)
+    result.breakdown["subtasks_completed"] = float(completed)
+    result.breakdown["subtasks_total"] = 14.0
+    result.breakdown["sla_milestones_met"] = float(milestones_met)
+    result.breakdown["sla_milestones_total"] = 3.0
+    result.breakdown["invalid_actions"] = float(invalid_count)
+
+    return result
 
 
 def both_findings_aggregated_expert(log: EpisodeLog) -> bool:

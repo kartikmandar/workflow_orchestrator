@@ -1,6 +1,14 @@
 """Dense per-step reward calculation and end-of-episode bonuses.
 
 7 positive signals, 9 negative signals, SLA penalties, and end-of-episode bonuses.
+
+Design note: Per-step rewards are RL training signals — they reward/penalize
+individual decisions to shape behavior. Grader scores (in graders.py) are
+episode-level evaluation metrics — they assess the overall trajectory outcome.
+These intentionally diverge: rewards encourage action discovery (e.g., +0.10 per
+parallelism event), while graders evaluate efficiency (e.g., parallelism ratio =
+events / total_steps). This separation ensures dense per-step learning signal
+without distorting the final evaluation metric.
 """
 
 from typing import Any
@@ -15,9 +23,37 @@ from .task_registry import TaskConfig
 class RewardCalculator:
     """Computes step rewards and end-of-episode bonuses for the orchestrator."""
 
-    # Maximum cumulative SLA penalty per milestone (prevents runaway penalties
-    # that dwarf all other reward signals and incentivize aborting over late completion)
+    # ── Positive signals ──
+    CORRECT_DELEGATION: float = 0.05
+    COMMUNICATION_SENT: float = 0.05
+    COST_EFFICIENT_CHOICE: float = 0.04
+    CORRECT_RETRY: float = 0.05
+    EFFICIENT_WAIT: float = 0.03
+    SUBTASK_COMPLETED: float = 0.08
+    FAILURE_RECOVERED: float = 0.10
+    PARALLELISM_EXPLOITED: float = 0.10
+
+    # ── Negative signals ──
+    WASTEFUL_ASSIGNMENT: float = -0.04
+    UNNECESSARY_WAIT: float = -0.03
+    ABORT_PENALTY: float = -0.03
+    WRONG_AGENT: float = -0.05
+    DEPENDENCY_VIOLATION: float = -0.10
+    REDUNDANT_ACTION: float = -0.05
+    CAPACITY_VIOLATION: float = -0.15
+    PERMANENT_RETRY: float = -0.06
+    GENERIC_INVALID: float = -0.05
+    UNRECOVERED_FAILURE: float = -0.08
+
+    # ── SLA penalties ──
+    SLA_PER_STEP: float = 0.05
     SLA_MAX_PENALTY_PER_MILESTONE: float = 0.15
+
+    # ── End-of-episode ──
+    ALL_COMPLETE_BONUS: float = 0.20
+    TIME_EFFICIENCY_WEIGHT: float = 0.10
+    COST_EFFICIENCY_WEIGHT: float = 0.05
+    INCOMPLETE_PENALTY: float = -0.10
 
     def __init__(self, task_config: TaskConfig) -> None:
         self._config = task_config
@@ -67,11 +103,10 @@ class RewardCalculator:
         # ── Positive signals ──
 
         if action_type == "delegate":
-            reward += 0.05  # correct_delegation
+            reward += self.CORRECT_DELEGATION
 
-            # Communication sent bonus
             if action.subtask_id in self._communication_subtasks:
-                reward += 0.05  # communication_sent
+                reward += self.COMMUNICATION_SENT
 
             # Cost-efficient choice: cheaper agent chosen when others available
             if self._cost_budget is not None and action.subtask_id and action.agent_name:
@@ -81,12 +116,12 @@ class RewardCalculator:
                     chosen_cost = agent_pool.get_agent_cost(action.agent_name)
                     min_cost = min(agent_pool.get_agent_cost(a) for a in capable)
                     if chosen_cost <= min_cost:
-                        reward += 0.04  # cost_efficient_choice
+                        reward += self.COST_EFFICIENT_CHOICE
                     elif chosen_cost > min_cost:
-                        reward -= 0.04  # wasteful_assignment
+                        reward += self.WASTEFUL_ASSIGNMENT
 
         elif action_type == "retry":
-            reward += 0.05  # correct_delegation (retry is a form of delegation)
+            reward += self.CORRECT_RETRY
 
         elif action_type == "wait":
             ready = dag.get_ready_subtasks()
@@ -102,28 +137,27 @@ class RewardCalculator:
                     break
 
             if has_assignable:
-                reward -= 0.03  # unnecessary_wait
+                reward += self.UNNECESSARY_WAIT
             else:
-                reward += 0.03  # efficient_wait
+                reward += self.EFFICIENT_WAIT
 
         elif action_type == "abort":
-            reward -= 0.03  # abort_penalty
+            reward += self.ABORT_PENALTY
 
         # ── Events this step ──
 
         for event in events_this_step:
             et = event.get("event_type")
             if et == "subtask_completed":
-                reward += 0.08  # subtask_completed
+                reward += self.SUBTASK_COMPLETED
 
-                # Check if this was a failure recovery
                 subtask_id = event.get("subtask_id", "")
                 attempt = dag.get_subtask_attempt_count(subtask_id)
                 if attempt > 0:
-                    reward += 0.10  # failure_recovered
+                    reward += self.FAILURE_RECOVERED
 
             elif et == "parallelism":
-                reward += 0.10  # parallelism_exploited
+                reward += self.PARALLELISM_EXPLOITED
 
         # ── SLA penalties ──
         reward += self._check_sla_penalties(dag, step)
@@ -149,18 +183,16 @@ class RewardCalculator:
         bonus = 0.0
 
         if dag.is_all_completed() and synthesized:
-            bonus += 0.20  # all completed + synthesized
+            bonus += self.ALL_COMPLETE_BONUS
 
-            # Time efficiency bonus
             if time_budget > 0:
-                bonus += 0.10 * (time_remaining / time_budget)
+                bonus += self.TIME_EFFICIENCY_WEIGHT * (time_remaining / time_budget)
 
-            # Cost efficiency bonus
             if self._cost_budget is not None and self._cost_budget > 0:
                 cost_ratio = agent_pool.get_budget_used() / self._cost_budget
-                bonus += 0.05 * max(0.0, 1.0 - cost_ratio)
+                bonus += self.COST_EFFICIENCY_WEIGHT * max(0.0, 1.0 - cost_ratio)
         else:
-            bonus -= 0.10  # incomplete episode
+            bonus += self.INCOMPLETE_PENALTY
 
         return bonus
 
@@ -173,21 +205,21 @@ class RewardCalculator:
         error = error or ""
 
         if "lacks capability" in error or "lacks required tooling" in error:
-            return -0.05  # wrong_agent
+            return self.WRONG_AGENT
 
         if "dependencies" in error.lower() or "not ready" in error.lower():
-            return -0.10  # dependency_violation
+            return self.DEPENDENCY_VIOLATION
 
         if "already completed" in error or "already in_progress" in error:
-            return -0.05  # redundant_action
+            return self.REDUNDANT_ACTION
 
         if "capacity" in error.lower():
-            return -0.15  # capacity_violation
+            return self.CAPACITY_VIOLATION
 
         if "permanent" in error.lower():
-            return -0.06  # permanent_retry
+            return self.PERMANENT_RETRY
 
-        return -0.05  # generic invalid action penalty
+        return self.GENERIC_INVALID
 
     def _check_sla_penalties(self, dag: DAGExecutor, step: int) -> float:
         """Check for SLA milestone violations and return penalty.
@@ -203,7 +235,7 @@ class RewardCalculator:
                     accrued = self._sla_penalty_accrued.get(subtask_id, 0.0)
                     if accrued < self.SLA_MAX_PENALTY_PER_MILESTONE:
                         step_penalty = min(
-                            0.05,
+                            self.SLA_PER_STEP,
                             self.SLA_MAX_PENALTY_PER_MILESTONE - accrued,
                         )
                         penalty -= step_penalty
@@ -223,7 +255,7 @@ class RewardCalculator:
             self._steps_since_failure[sid] += 1
 
             if self._steps_since_failure[sid] >= 2:
-                penalty -= 0.08  # unrecovered_failure
+                penalty += self.UNRECOVERED_FAILURE
 
         # If this action retries a failed subtask, reset its counter
         if action.action_type == "retry" and action.subtask_id:

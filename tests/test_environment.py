@@ -481,13 +481,13 @@ class TestHardTaskEdgeCases:
         result = grade_hard(log)
         # With activity gate, doing nothing scores 0.0: "no harm" dimensions
         # (error_classification, capacity_discipline, cost_efficiency) are
-        # gated by min(1.0, completed/3) which is 0.0 when nothing is completed.
+        # gated by min(1.0, completed/5) which is 0.0 when nothing is completed.
         assert result.score <= 0.05
         assert result.breakdown["completion"] == 0.0
         assert result.breakdown["recovery"] == 0.0
         assert result.breakdown["sla_compliance"] == 0.0
-        # All 10 keys should be present (9 dimensions + invalid_penalty)
-        assert len(result.breakdown) == 10
+        # 18 keys: 9 dimensions + invalid_penalty + 8 diagnostic metadata
+        assert len(result.breakdown) == 18
 
     def test_sla_penalty_when_delayed(self) -> None:
         """Delaying root_cause past step 10 should incur SLA penalties."""
