@@ -15,9 +15,7 @@ tags:
 
 An OpenEnv environment for evaluating how well an LLM agent can coordinate DAG-based workflows. The agent assigns subtasks to simulated specialist agents, exploits parallelism, recovers from failures, manages limited capacity, and synthesizes outputs under time and cost constraints.
 
-Four scenarios of increasing difficulty: feature development, CI/CD deployment, production incident response, and daily planning across competing priorities. Each level requires a different kind of reasoning — the hard task isn't just a bigger DAG, it's a fundamentally different problem.
-
-To our knowledge, OpenEnv currently lacks a benchmark focused on multi-agent orchestration. This environment covers coordination behaviors — delegation, dependency tracking, failure recovery, cost management — that are underrepresented in existing tasks.
+Four scenarios of increasing difficulty: feature development, CI/CD deployment, production incident response, and daily planning across competing priorities.
 
 ## Quickstart
 
@@ -47,18 +45,18 @@ python inference.py
 
 ## Example: Hard Task Walkthrough
 
-An annotated trace showing the agent navigating the Production Incident Response. This is the task that separates heuristics from reasoning — a greedy policy scores 0.07 here.
+An annotated trace showing the agent navigating the Production Incident Response. This is the task that separates heuristics from reasoning. A greedy policy scores 0.07 here.
 
 ```
 Step  1: delegate(alert_triage, triage_analyst)       → Triage confirmed, 3 investigation tracks unlocked
-Step  2: delegate(enrich_logs, investigator_alpha)     → FAILS. Permanent failure — alpha lacks log tooling.
+Step  2: delegate(enrich_logs, investigator_alpha)     → FAILS. Permanent failure, alpha lacks log tooling.
 Step  3: delegate(check_dashboards, monitor)           → Parallelism: 2 tasks concurrent (+0.10)
 Step  4: retry(enrich_logs, investigator_beta)         → Correct recovery: switched to a different agent
 Step  5: delegate(check_dependencies, investigator_alpha)  → Alpha can still do other task types
-Step  6: delegate(notify_stakeholders, communicator)   → Side channel — doesn't block critical path
+Step  6: delegate(notify_stakeholders, communicator)   → Side channel, doesn't block critical path
 Step  7: delegate(root_cause_analysis, senior_engineer)
          → enrich_logs (beta) and check_dashboards (monitor) completed by
-           different agents — conflict resolution criterion met
+           different agents, so conflict resolution criterion is met
 Step  8: delegate(deploy_hotfix, deployer)             → Must happen before deployer goes offline at step 12
 Step  9: delegate(update_status_page, communicator)
 Step 10: delegate(validate_fix, senior_engineer)
@@ -112,7 +110,7 @@ Time: 16 steps. Capacity: 3. Cost budget: 35.
 
 ### Hard: Production Incident Response
 
-10 subtasks, 7 agents with overlapping capabilities and costs from 1.0 to 5.0. Two designed failure traps: `investigator_alpha` permanently cannot do `enrich_logs`, and `deployer` drops offline at step 12. SLA milestones require root cause by step 10 and hotfix by step 16. Two investigation tracks produce conflicting findings — the grader checks that different agents ran each track.
+10 subtasks, 7 agents with overlapping capabilities and costs from 1.0 to 5.0. Two designed failure traps: `investigator_alpha` permanently cannot do `enrich_logs`, and `deployer` drops offline at step 12. SLA milestones require root cause by step 10 and hotfix by step 16. Two investigation tracks produce conflicting findings, and the grader checks that different agents ran each track.
 
 ```mermaid
 graph LR
@@ -133,7 +131,7 @@ Time: 22 steps. Capacity: 3. Cost budget: 40.
 
 ### Expert: Life OS Daily Orchestration
 
-14 subtasks across health, career, and personal pillars. 8 agents including 2 permanent failure traps. Career agent slows down at step 7, personal agent drops out at step 10. The agent must balance competing objectives — sacrificing health entirely for career throughput is penalized. Two conflict resolution points require reconciling contradictory inputs.
+14 subtasks across health, career, and personal pillars. 8 agents including 2 permanent failure traps. Career agent slows down at step 7, personal agent drops out at step 10. The agent must balance competing objectives; sacrificing health entirely for career throughput is penalized. Two conflict resolution points require reconciling contradictory inputs.
 
 ```mermaid
 graph LR
@@ -170,7 +168,7 @@ Five actions, sent as JSON:
 {"action_type": "abort", "subtask_id": "stuck_task"}
 ```
 
-Invalid actions are accepted but penalized — the step is consumed, a penalty applies, and state doesn't change. This is intentional: RL agents learn from negative signals.
+Invalid actions are accepted but penalized. The step is consumed, a penalty applies, and state doesn't change. RL agents learn from negative signals, so silent rejection would be worse.
 
 ## Scoring
 
@@ -178,7 +176,7 @@ Each task has a multi-dimensional grader that analyzes the episode event log. Sc
 
 Graders use **activity gates**: dimensions that reward "no harm" (error classification, capacity discipline, cost efficiency) scale with actual completion. A do-nothing policy earns 0.01.
 
-**Reward signals** are dense and per-step — not binary end-of-episode. Positive: correct delegation (+0.05), subtask completed (+0.08), parallelism (+0.10), failure recovered (+0.10), efficient wait (+0.03). Negative: dependency violation (-0.10), capacity violation (-0.15), wrong agent (-0.05), unrecovered failure (-0.08 after 2+ steps). Per-step rewards are training signals; grader scores are episode-level evaluation metrics. These intentionally diverge.
+**Reward signals** are dense and per-step, not binary end-of-episode. Positive: correct delegation (+0.05), subtask completed (+0.08), parallelism (+0.10), failure recovered (+0.10), efficient wait (+0.03). Negative: dependency violation (-0.10), capacity violation (-0.15), wrong agent (-0.05), unrecovered failure (-0.08 after 2+ steps). Per-step rewards are training signals; grader scores are episode-level evaluation metrics. These intentionally diverge.
 
 ## Benchmarks
 
@@ -191,7 +189,7 @@ Single-run scores, Qwen3-32B via OpenRouter, temperature=0, max_tokens=4096:
 | **Qwen3-32B** | **0.90** | **0.63** | **0.73** | **0.74** |
 | Oracle | 0.90 | 0.63 | 0.78 | 0.95 |
 
-The hard task is the strongest discriminator — the greedy heuristic scores 0.07 because it gets stuck retrying the permanently failing agent. The expert task has the largest oracle gap (0.21) because multi-objective balancing is genuinely hard for current LLMs. The greedy heuristic actually outperforms the LLM on expert (0.87 vs 0.74) because rapid delegation beats deliberation when subtasks are straightforward — but it can't handle the conflict resolution points that the oracle nails.
+The hard task is the strongest discriminator. The greedy heuristic scores 0.07 because it gets stuck retrying the permanently failing agent. The expert task has the largest oracle gap (0.21) because multi-objective balancing is genuinely hard for current LLMs. The greedy heuristic actually outperforms the LLM on expert (0.87 vs 0.74) because rapid delegation beats deliberation when subtasks are straightforward, but it can't handle the conflict resolution points that the oracle nails.
 
 ## API
 
@@ -231,7 +229,7 @@ workflow_orchestrator/
 ## Known Limitations
 
 - The baseline sometimes retries permanently failing agents 2-3 times before switching. Error classification remains the weakest LLM capability here.
-- Cost optimization is underutilized — neither the LLM nor heuristic consistently picks cheaper agents when alternatives exist.
+- Cost optimization is underutilized. Neither the LLM nor heuristic consistently picks cheaper agents when alternatives exist.
 - Medium parallelism has a structural ceiling (~0.80) because agent speed mismatches prevent true 3-way overlap.
 
 ## Design Background
