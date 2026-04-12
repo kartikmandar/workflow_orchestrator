@@ -261,4 +261,4 @@ workflow_orchestrator/
 
 ## Design Background
 
-The tasks are shaped by work on multi-agent failure modes ([arxiv 2503.13657](https://arxiv.org/abs/2503.13657)), error spread in agent networks ([arxiv 2603.04474](https://arxiv.org/abs/2603.04474)), the finding that 3-agent teams hit a good balance between coordination cost and output ([ACL 2025](https://aclanthology.org/2025.acl-long.421/)), and difficulty-aware task routing ([arxiv 2509.11079](https://arxiv.org/html/2509.11079v1)). The per-step reward design comes from work showing that targeted RL feedback improves error recovery by up to 26% ([arxiv 2509.25370](https://arxiv.org/abs/2509.25370)).
+The tasks are shaped by work on multi-agent failure modes ([arxiv 2503.13657](https://arxiv.org/abs/2503.13657)), error spread in agent networks ([arxiv 2603.04474](https://arxiv.org/abs/2603.04474)), and difficulty-aware task routing ([arxiv 2509.11079](https://arxiv.org/html/2509.11079v1)). The per-step reward design comes from work showing that targeted corrective feedback improves LLM agent error recovery by up to 26% ([arxiv 2509.25370](https://arxiv.org/abs/2509.25370)).
